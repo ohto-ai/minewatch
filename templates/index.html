@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MC Server Logs</title>
+<style>
+  :root {
+    --bg:       #1a1a1a;
+    --bg2:      #252525;
+    --text:     #d0d0d0;
+    --muted:    #6a6a6a;
+    --accent:   #3a8a3a;
+    --warn:     #e0a000;
+    --err:      #e04040;
+    --cyan:     #40e0e0;
+    --green:    #50d050;
+    --gold:     #e0b040;
+    --border:   #333;
+    --hover-bg: #2d2d2d;
+    --trace-text: #b8b0a0;   /* 堆栈行：暖灰，比普通日志亮眼 */
+    --err-bg:    rgba(200,60,60,0.06);
+    --err-border: rgba(200,60,60,0.25);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Consolas", "Courier New", "Microsoft YaHei", monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    min-height: 100vh;
+  }
+
+  /* ── Top bar ──────────────────────────────── */
+  .topbar {
+    background: var(--bg2);
+    border-bottom: 2px solid var(--accent);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    position: sticky; top: 0; z-index: 10;
+  }
+  .topbar .title {
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--green);
+    letter-spacing: 1px;
+    text-shadow: 0 0 8px rgba(80,208,80,0.3);
+  }
+  .topbar .meta {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .topbar select, .topbar button {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 10px;
+    font: inherit; font-size: 12px;
+    cursor: pointer;
+  }
+  .topbar button:hover { background: var(--hover-bg); }
+  .topbar select:hover { background: var(--hover-bg); }
+
+  .spacer { flex: 1; }
+
+  /* ── Log area ──────────────────────────────── */
+  .log-area {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 12px 16px;
+    min-height: 60vh;
+  }
+
+  /* 四列 flex 行: srv | datetime | level | message */
+  .line {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 2px 6px;
+    border-left: 2px solid transparent;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .line:hover { background: var(--hover-bg); }
+
+  /* ERROR 行红色标识 */
+  .line-err {
+    background: var(--err-bg);
+    border-left-color: var(--err-border);
+  }
+  .line-err:hover { background: rgba(200,60,60,0.1); }
+
+  /* ── 列 1: 服务名 ──────────────────────────── */
+  .srv {
+    flex: 0 0 54px;
+    min-width: 54px;
+    font-size: 10px;
+    font-weight: bold;
+    text-align: center;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: hsl(var(--h, 0), 30%, 18%);
+    color:      hsl(var(--h, 0), 55%, 62%);
+    border: 1px solid hsl(var(--h, 0), 30%, 28%);
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  /* ── 列 2: 完整日期时间 (from `time` field) ── */
+  .dt {
+    flex: 0 0 122px;
+    min-width: 122px;
+    font-size: 12px;
+    color: #9a9a9a;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── 列 3: LEVEL ───────────────────────────── */
+  .lvl-info  { flex: 0 0 38px; min-width: 38px; color: #8b8b8b; font-weight: bold; font-size: 12px; }
+  .lvl-warn  { flex: 0 0 38px; min-width: 38px; color: var(--warn); font-weight: bold; font-size: 12px; }
+  .lvl-err   { flex: 0 0 38px; min-width: 38px; color: var(--err); font-weight: bold; font-size: 12px; }
+  .lvl-none  { flex: 0 0 38px; min-width: 38px; color: #4a4a4a; font-size: 12px; user-select: none; }
+
+  /* ── 列 4: 消息内容 ────────────────────────── */
+  .msg { flex: 1; min-width: 0; }
+
+  /* ── 堆栈 / 续行 ──────────────────────────── */
+  .trace, .trace-err { font-size: 12px; }
+  .trace      { color: var(--trace-text); }
+  .trace-err  {
+    color: #d0b0a0;               /* 暖红灰，比普通 trace 更亮 */
+    background: var(--err-bg);
+    border-left-color: var(--err-border);
+  }
+  .trace-err:hover { background: rgba(200,60,60,0.1); }
+
+  /* ── 高亮 ──────────────────────────────────── */
+  .player  { color: var(--cyan); font-weight: bold; }
+  .plugin  { color: var(--green); }
+  .nag     { color: var(--muted); opacity: 0.6; }
+  .command { color: var(--gold); }
+
+  /* ── Pagination ────────────────────────────── */
+  .pager {
+    max-width: 960px;
+    margin: 16px auto 30px;
+    padding: 0 20px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+  .pager a, .pager span {
+    display: inline-block;
+    min-width: 32px;
+    padding: 6px 10px;
+    text-align: center;
+    text-decoration: none;
+    color: var(--text);
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    font-size: 12px;
+  }
+  .pager a:hover { background: var(--hover-bg); border-color: var(--accent); }
+  .pager .cur {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: bold;
+  }
+  .pager .gap {
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    min-width: 20px;
+  }
+  .pager .nav { color: var(--accent); }
+  .pager .nav-disabled {
+    color: var(--muted);
+    cursor: default;
+    opacity: 0.4;
+  }
+
+  /* ── Filters ──────────────────────────────── */
+  .filters {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .filter-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .flabel { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .cb {
+    font-size: 12px; color: var(--muted); cursor: pointer;
+    display: flex; align-items: center; gap: 3px; user-select: none;
+  }
+  .cb input { cursor: pointer; accent-color: var(--accent); }
+  .filters input[type="text"],
+  .filters input[type="datetime-local"] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    font: inherit; font-size: 12px;
+  }
+  .filters input[type="text"]:focus,
+  .filters input[type="datetime-local"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .btn-apply, .btn-reset {
+    background: var(--bg2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 12px;
+    font: inherit; font-size: 12px;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .btn-apply:hover, .btn-reset:hover { border-color: var(--accent); background: var(--hover-bg); }
+  .btn-apply { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ── Footer ────────────────────────────────── */
+  footer {
+    text-align: center;
+    padding: 20px;
+    color: var(--muted);
+    font-size: 11px;
+    border-top: 1px solid var(--border);
+  }
+</style>
+<meta http-equiv="refresh" content="15">
+</head>
+<body>
+
+<!-- ── Top bar ──────────────────────────────── -->
+<div class="topbar">
+  <span class="title">▣ MC Server Logs</span>
+
+  <form method="get" class="filters" id="filters">
+    <div class="filter-row">
+      <select name="name" onchange="this.form.submit()">
+        <option value="">全部子服</option>
+        {% for s in servers %}
+        <option value="{{ s }}" {% if s == name_filter %}selected{% endif %}>{{ s }}</option>
+        {% endfor %}
+      </select>
+
+      <select name="per_page" onchange="this.form.submit()">
+        <option value="20"  {% if per_page==20 %}selected{% endif %}>20条/页</option>
+        <option value="50"  {% if per_page==50 %}selected{% endif %}>50条/页</option>
+        <option value="100" {% if per_page==100 %}selected{% endif %}>100条/页</option>
+        <option value="200" {% if per_page==200 %}selected{% endif %}>200条/页</option>
+      </select>
+
+      <input type="text" name="keyword" placeholder="关键词搜索…"
+             value="{{ keyword }}" style="width:140px;">
+
+      <label class="cb" title="只显示带 [HH:MM:SS LEVEL]: 头的标准日志，隐藏堆栈报错行">
+        <input type="checkbox" name="hide_trace" value="1"
+               {% if hide_trace %}checked{% endif %} onchange="this.form.submit()">
+        隐藏堆栈
+      </label>
+    </div>
+    <div class="filter-row">
+      <span class="flabel">时间:</span>
+      <input type="datetime-local" name="from" value="{{ from_val }}"
+             title="起始时间">
+      <span class="flabel">—</span>
+      <input type="datetime-local" name="to" value="{{ to_val }}"
+             title="结束时间">
+      <button type="submit" class="btn-apply">筛选</button>
+      <a href="/" class="btn-reset">清除</a>
+    </div>
+  </form>
+
+  <span class="meta">共 {{ total }} 条 &nbsp;|&nbsp; 更新于 {{ last_update }}</span>
+  <button onclick="location.reload()">↻ 刷新</button>
+</div>
+
+<!-- ── Logs ──────────────────────────────────── -->
+<div class="log-area">
+  {% for line in lines %}
+  {{ line|safe }}
+  {% else %}
+  <div style="text-align:center;padding:80px 0;color:var(--muted);">
+    暂无日志数据
+  </div>
+  {% endfor %}
+</div>
+
+<!-- ── Pagination ────────────────────────────── -->
+{% if total_pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}
+  <a class="nav" href="?page=1{{ qs_prefix }}">««</a>
+  <a class="nav" href="?page={{ page-1 }}{{ qs_prefix }}">«</a>
+  {% else %}
+  <span class="nav-disabled">««</span>
+  <span class="nav-disabled">«</span>
+  {% endif %}
+
+  {% for p in page_nums %}
+    {% if p is none %}
+    <span class="gap">…</span>
+    {% elif p == page %}
+    <span class="cur">{{ p }}</span>
+    {% else %}
+    <a href="?page={{ p }}{{ qs_prefix }}">{{ p }}</a>
+    {% endif %}
+  {% endfor %}
+
+  {% if page < total_pages %}
+  <a class="nav" href="?page={{ page+1 }}{{ qs_prefix }}">»</a>
+  <a class="nav" href="?page={{ total_pages }}{{ qs_prefix }}">»»</a>
+  {% else %}
+  <span class="nav-disabled">»</span>
+  <span class="nav-disabled">»»</span>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ── Footer ────────────────────────────────── -->
+<footer>
+  自动刷新 15s &nbsp;·&nbsp;
+  <a href="/api/logs" style="color:var(--muted);">API</a> &nbsp;·&nbsp;
+  <a href="/api/stats" style="color:var(--muted);">统计</a>
+</footer>
+
+</body>
+</html>

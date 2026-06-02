@@ -1,0 +1,111 @@
+"""
+Log fetching — poll the API and persist to SQLite.
+"""
+
+import re
+import time as _time
+import sqlite3
+
+import requests
+
+from config import LOG_URL, LOG_REFERER
+from auth import get_auth_headers
+from db import insert_logs, count_logs, get_latest_time
+from schedule import get_interval, describe
+
+# ESC character (0x1B) — appears as  in JSON, decoded by json.loads
+ESC = "\x1b"
+
+# Regex to strip Minecraft ANSI CSI sequences: ESC[ <params> <letter>
+_ANSI_CSI = re.compile(ESC + r"\[[0-9;]*[a-zA-Z]")
+_ANSI_LINE_CLEAR = re.compile(ESC + r"\[K")
+
+
+def clean_log(raw: str) -> str:
+    """Remove ANSI codes and control chars from a log line, returning clean text."""
+    text = _ANSI_CSI.sub("", raw)          # colour / formatting codes
+    text = _ANSI_LINE_CLEAR.sub("", text)  # line-clear sequences
+    text = text.replace("\r", "")           # carriage return
+    text = text.replace(ESC, "")            # any stray bare ESC
+    return text.strip()
+
+
+def fetch_logs(session: requests.Session, search: str = "") -> list[dict]:
+    """
+    Fetch the latest 100 log entries from the API.
+    Returns a list of raw entry dicts.
+    """
+    resp = session.get(
+        LOG_URL,
+        params={"log": search},
+        headers={
+            **get_auth_headers(),
+            "Referer": LOG_REFERER,
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    return body.get("data", [])
+
+
+def poll_loop(conn: sqlite3.Connection) -> None:
+    """Main polling loop — fetch, clean, store, repeat."""
+    session = requests.Session()
+    total_stored = count_logs(conn)
+    watermark = get_latest_time(conn) or 0
+    prev_interval = get_interval()
+
+    print(f"[init] DB contains {total_stored} existing entries")
+    print(f"[init] 调度: {describe()}")
+    print(f"[init] Ctrl+C to stop\n")
+
+    consecutive_errors = 0
+
+    try:
+        while True:
+            loop_start = _time.monotonic()
+
+            try:
+                entries = fetch_logs(session)
+                consecutive_errors = 0
+
+                # Clean ANSI codes from each log line
+                for entry in entries:
+                    entry["log"] = clean_log(entry["log"])
+
+                new_count, watermark = insert_logs(conn, entries,
+                                                    since_time=watermark)
+                if new_count > 0:
+                    total_stored += new_count
+                    latest = entries[0]["log"] if entries else ""
+                    preview = latest[:90] + "..." if len(latest) > 90 else latest
+                    print(f"[+{new_count:>3}] total={total_stored:<8} | {preview}")
+
+                # Dynamic interval — may change across time boundaries
+                interval = get_interval()
+                if interval != prev_interval:
+                    print(f"[sch] 时段切换 → {describe()}")
+                    prev_interval = interval
+
+                # Sleep precisely, accounting for request latency
+                elapsed = _time.monotonic() - loop_start
+                remaining = interval - elapsed
+                if remaining > 0:
+                    _time.sleep(remaining)
+
+            except requests.RequestException as e:
+                consecutive_errors += 1
+                wait = min(consecutive_errors * 2, 30)
+                print(f"[err] HTTP error (retry in {wait}s): {e}")
+                _time.sleep(wait)
+
+            except Exception as e:
+                consecutive_errors += 1
+                wait = min(consecutive_errors * 2, 30)
+                print(f"[err] Unexpected error (retry in {wait}s): {e}")
+                _time.sleep(wait)
+
+    except KeyboardInterrupt:
+        print(f"\n[stop] Interrupted — {total_stored} total entries stored")
+        session.close()
