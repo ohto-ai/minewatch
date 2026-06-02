@@ -63,7 +63,7 @@ def _srv_hue(name: str) -> int:
     return _SRV_SEEN[name]
 
 
-def fmt_log_line(log: str, name: str, epoch_ms: int) -> str:
+def fmt_log_line(log: str, name: str, epoch_ms: int, row_id: int = 0) -> str:
     """Convert a cleaned log line to MC-styled HTML.
 
     Layout:  [server]  MM-DD HH:MM:SS  LEVEL  message
@@ -94,7 +94,7 @@ def fmt_log_line(log: str, name: str, epoch_ms: int) -> str:
 
         line_cls = "line-err" if lvl == "ERROR" else ""
         return (
-            f'<div class="line {line_cls}">'
+            f'<div class="line {line_cls}" data-id="{row_id}">'
             f'{badge}'
             f'<span class="dt">{dt_str}</span>'
             f'<span class="{css_cls}">{lvl}</span>'
@@ -106,7 +106,7 @@ def fmt_log_line(log: str, name: str, epoch_ms: int) -> str:
         log_esc = _esc(log)
         trace_cls = "trace-err" if RE_TRACE.search(log_esc) else "trace"
         return (
-            f'<div class="line {trace_cls}">'
+            f'<div class="line {trace_cls}" data-id="{row_id}">'
             f'{badge}'
             f'<span class="dt">{dt_str}</span>'
             f'<span class="lvl-none">---</span>'
@@ -178,7 +178,7 @@ def index():
 
     where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     count_sql = f"SELECT COUNT(*) FROM logs {where_sql}"
-    data_sql  = f"SELECT log, name, time FROM logs {where_sql} ORDER BY time DESC LIMIT ? OFFSET ?"
+    data_sql  = f"SELECT id, log, name, time FROM logs {where_sql} ORDER BY time DESC, id DESC LIMIT ? OFFSET ?"
 
     db = get_db()
     try:
@@ -189,7 +189,10 @@ def index():
         offset = (page - 1) * per_page
 
         rows = db.execute(data_sql, [*params, per_page, offset]).fetchall()
-        lines = [fmt_log_line(r["log"], r["name"], r["time"]) for r in rows]
+        lines = [fmt_log_line(r["log"], r["name"], r["time"], r["id"]) for r in rows]
+        # Cursor is (max_time, max_id) so poll can do time >= ? AND id > ?
+        max_time = rows[0]["time"] if rows else 0
+        max_id   = rows[0]["id"]   if rows else 0
 
         servers = [r[0] for r in db.execute(
             "SELECT DISTINCT name FROM logs ORDER BY name"
@@ -232,6 +235,8 @@ def index():
         servers=servers,
         last_update=last_update,
         qs_prefix=qs_prefix,
+        max_time=max_time,
+        max_id=max_id,
         now_ts=int(time.time()),
     )
 
@@ -281,6 +286,79 @@ def api_stats():
         "total": total,
         "last_time": latest,
         "per_server": per_server,
+    })
+
+
+@app.route("/api/poll")
+def api_poll():
+    """Incremental poll — returns new lines since (since_time, since_id).
+
+    Uses (time, id) tuple as cursor:  WHERE time >= ? AND id > ?
+    This ensures we never miss entries with the same timestamp but
+    higher id, and never return entries already shown on the page.
+    """
+    since_time  = request.args.get("since_time", 0, type=int)
+    since_id    = request.args.get("since_id", 0, type=int)
+    name_filter = request.args.get("name", "").strip()
+    hide_trace  = request.args.get("hide_trace", "0") == "1"
+    keyword     = request.args.get("keyword", "").strip()
+    from_ts     = _parse_datetime(request.args.get("from", ""))
+    to_ts       = _parse_datetime(request.args.get("to", ""))
+
+    clauses: list[str] = ["(time >= ? AND id > ?)"]
+    params: list = [since_time, since_id]
+
+    if name_filter:
+        clauses.append("name = ?")
+        params.append(name_filter)
+    if hide_trace:
+        clauses.append("log LIKE '%]:%'")
+    if keyword:
+        clauses.append("log LIKE ?")
+        params.append(f"%{keyword}%")
+    if from_ts is not None:
+        clauses.append("time >= ?")
+        params.append(from_ts)
+    if to_ts is not None:
+        clauses.append("time <= ?")
+        params.append(to_ts)
+
+    where_sql = "WHERE " + " AND ".join(clauses)
+
+    db = get_db()
+    try:
+        rows = db.execute(
+            f"SELECT id, log, name, time FROM logs {where_sql} "
+            "ORDER BY time DESC, id DESC LIMIT 200",
+            params
+        ).fetchall()
+
+        lines_html = [fmt_log_line(r["log"], r["name"], r["time"], r["id"])
+                      for r in rows]
+
+        if rows:
+            new_max_time = rows[0]["time"]
+            new_max_id   = rows[0]["id"]
+        else:
+            new_max_time = since_time
+            new_max_id   = since_id
+
+        total = db.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+        latest = db.execute("SELECT MAX(time) FROM logs").fetchone()[0]
+        last_update = (
+            datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
+            if latest else "无数据"
+        )
+    finally:
+        db.close()
+
+    return jsonify({
+        "lines_html": lines_html,
+        "count": len(lines_html),
+        "max_time": new_max_time,
+        "max_id": new_max_id,
+        "last_update": last_update,
+        "total": total,
     })
 
 # ── Pagination helpers ─────────────────────────────────────────

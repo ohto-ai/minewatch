@@ -242,7 +242,7 @@
     border-top: 1px solid var(--border);
   }
 </style>
-<meta http-equiv="refresh" content="15">
+<!-- auto-refresh handled by JS polling -->
 </head>
 <body>
 
@@ -292,7 +292,7 @@
 </div>
 
 <!-- ── Logs ──────────────────────────────────── -->
-<div class="log-area">
+<div class="log-area" data-max-time="{{ max_time }}" data-max-id="{{ max_id }}">
   {% for line in lines %}
   {{ line|safe }}
   {% else %}
@@ -335,10 +335,83 @@
 
 <!-- ── Footer ────────────────────────────────── -->
 <footer>
-  自动刷新 15s &nbsp;·&nbsp;
+  <span id="poll-status">实时监听中 (15s)</span> &nbsp;·&nbsp;
   <a href="/api/logs" style="color:var(--muted);">API</a> &nbsp;·&nbsp;
   <a href="/api/stats" style="color:var(--muted);">统计</a>
 </footer>
+
+<script>
+(function() {
+  const POLL_INTERVAL = 15000;  // 15 seconds
+  const logArea = document.querySelector('.log-area');
+  const statusEl = document.getElementById('poll-status');
+  const metaEl = document.querySelector('.topbar .meta');
+
+  // Cursor: (maxTime, maxId) — only fetch rows with time >= maxTime AND id > maxId
+  let maxTime = parseInt(logArea.dataset.maxTime) || 0;
+  let maxId   = parseInt(logArea.dataset.maxId)   || 0;
+  let pollTimer = null;
+  let failCount = 0;
+
+  function buildPollUrl() {
+    const params = new URLSearchParams(window.location.search);
+    params.set('since_time', maxTime);
+    params.set('since_id', maxId);
+    return '/api/poll?' + params.toString();
+  }
+
+  async function poll() {
+    try {
+      const resp = await fetch(buildPollUrl());
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+
+      failCount = 0;
+
+      // Update metadata
+      if (metaEl && data.total !== undefined) {
+        metaEl.textContent = '共 ' + data.total + ' 条  |  更新于 ' + data.last_update;
+      }
+
+      if (data.lines_html && data.lines_html.length > 0) {
+        // Prepend new lines (they come newest-first from server)
+        const fragment = document.createRange().createContextualFragment(
+          data.lines_html.join('')
+        );
+        logArea.insertBefore(fragment, logArea.firstChild);
+        maxTime = data.max_time;
+        maxId   = data.max_id;
+        logArea.dataset.maxTime = maxTime;
+        logArea.dataset.maxId   = maxId;
+        statusEl.textContent = '实时监听中 (15s) — +' + data.count + ' 条新消息';
+        setTimeout(function() { statusEl.textContent = '实时监听中 (15s)'; }, 3000);
+      }
+
+      // Trim old lines to keep DOM at most 500
+      while (logArea.children.length > 500) {
+        logArea.removeChild(logArea.lastChild);
+      }
+    } catch (e) {
+      failCount++;
+      if (failCount <= 3) {
+        statusEl.textContent = '轮询失败 (' + failCount + ') — 继续重试';
+      } else {
+        statusEl.textContent = '连接异常 — 点击 ↻ 手动刷新';
+      }
+      console.warn('Poll error:', e);
+    } finally {
+      pollTimer = setTimeout(poll, POLL_INTERVAL);
+    }
+  }
+
+  // Start first poll after interval
+  pollTimer = setTimeout(poll, POLL_INTERVAL);
+
+  window.addEventListener('beforeunload', function() {
+    clearTimeout(pollTimer);
+  });
+})();
+</script>
 
 </body>
 </html>
