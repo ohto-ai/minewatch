@@ -305,32 +305,43 @@ def api_poll():
     from_ts     = _parse_datetime(request.args.get("from", ""))
     to_ts       = _parse_datetime(request.args.get("to", ""))
 
-    clauses: list[str] = ["(time >= ? AND id > ?)"]
-    params: list = [since_time, since_id]
+    # ── Build filter clauses (without cursor) ──
+    filter_clauses: list[str] = []
+    filter_params: list = []
 
     if name_filter:
-        clauses.append("name = ?")
-        params.append(name_filter)
+        filter_clauses.append("name = ?")
+        filter_params.append(name_filter)
     if hide_trace:
-        clauses.append("log LIKE '%]:%'")
+        filter_clauses.append("log LIKE '%]:%'")
     if keyword:
-        clauses.append("log LIKE ?")
-        params.append(f"%{keyword}%")
+        filter_clauses.append("log LIKE ?")
+        filter_params.append(f"%{keyword}%")
     if from_ts is not None:
-        clauses.append("time >= ?")
-        params.append(from_ts)
+        filter_clauses.append("time >= ?")
+        filter_params.append(from_ts)
     if to_ts is not None:
-        clauses.append("time <= ?")
-        params.append(to_ts)
+        filter_clauses.append("time <= ?")
+        filter_params.append(to_ts)
 
-    where_sql = "WHERE " + " AND ".join(clauses)
+    filter_where = (" AND ".join(filter_clauses)) if filter_clauses else ""
+
+    # ── Combine cursor + filter for data query ──
+    cursor_clause = "(time >= ? AND id > ?)"
+    cursor_params = [since_time, since_id]
+
+    data_where_parts = [cursor_clause]
+    if filter_where:
+        data_where_parts.append(filter_where)
+    data_where = "WHERE " + " AND ".join(data_where_parts)
+    all_params = cursor_params + filter_params
 
     db = get_db()
     try:
         rows = db.execute(
-            f"SELECT id, log, name, time FROM logs {where_sql} "
+            f"SELECT id, log, name, time FROM logs {data_where} "
             "ORDER BY time DESC, id DESC LIMIT 200",
-            params
+            all_params
         ).fetchall()
 
         lines_html = [fmt_log_line(r["log"], r["name"], r["time"], r["id"])
@@ -343,7 +354,11 @@ def api_poll():
             new_max_time = since_time
             new_max_id   = since_id
 
-        total = db.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+        # Total with filters applied (no cursor limit)
+        count_sql = "SELECT COUNT(*) FROM logs"
+        if filter_where:
+            count_sql += f" WHERE {filter_where}"
+        total = db.execute(count_sql, filter_params).fetchone()[0]
         latest = db.execute("SELECT MAX(time) FROM logs").fetchone()[0]
         last_update = (
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
