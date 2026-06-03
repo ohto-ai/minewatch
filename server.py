@@ -20,6 +20,12 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
+
+try:
+    from mcstatus import JavaServer as _MCJavaServer
+    _MCSTATUS_AVAILABLE = True
+except ImportError:
+    _MCSTATUS_AVAILABLE = False
 from flask import (
     Flask, render_template, request, jsonify,
     session, redirect, url_for, flash,
@@ -52,6 +58,87 @@ PER_PAGE = 50
 SYNC_BATCH_SIZE = 200
 AUTH_REFRESH_INTERVAL_SECONDS = 5
 TZ = timezone(timedelta(hours=8))  # 北京时间
+
+# ── MC Server promotion config ────────────────────────────────
+MC_SERVER_HOST = os.environ.get("MC_SERVER_HOST", "xcon.top")
+MC_SERVER_PORT = int(os.environ.get("MC_SERVER_PORT", "25565"))
+MC_SERVER_CACHE_TTL = 60  # cache server info for 60 seconds
+_mc_server_cache: dict | None = None
+_mc_server_cache_time: float = 0.0
+
+
+def _motd_to_plain(raw: dict) -> str:
+    """Recursively extract plain text from a Minecraft chat component tree."""
+    parts: list[str] = []
+
+    def _walk(node):
+        if isinstance(node, str):
+            parts.append(node)
+        elif isinstance(node, dict):
+            text = node.get("text", "")
+            if text:
+                parts.append(text)
+            for child in node.get("extra", []) or []:
+                _walk(child)
+
+    _walk(raw)
+    return "".join(parts)
+
+
+def get_mc_server_info() -> dict | None:
+    """Query the Minecraft server for status.  Returns None on failure.
+
+    Results are cached for MC_SERVER_CACHE_TTL seconds so the login page
+    doesn't hammer the game server on every render.
+    """
+    global _mc_server_cache, _mc_server_cache_time
+
+    now = time.time()
+    if _mc_server_cache is not None and (now - _mc_server_cache_time) < MC_SERVER_CACHE_TTL:
+        return _mc_server_cache
+
+    if not _MCSTATUS_AVAILABLE:
+        return None
+
+    try:
+        server = _MCJavaServer.lookup(MC_SERVER_HOST, timeout=5)
+        status = server.status()
+    except Exception:
+        _mc_server_cache = None
+        _mc_server_cache_time = now
+        return None
+
+    # Build favicon data-URI if present
+    favicon_data_uri = None
+    if status.icon:
+        try:
+            # mcstatus returns the icon already prefixed with data:image/png;base64,
+            favicon_data_uri = status.icon if status.icon.startswith("data:") else "data:image/png;base64," + status.icon
+        except Exception:
+            pass
+
+    motd_plain = ""
+    if hasattr(status, "motd"):
+        try:
+            motd_plain = _motd_to_plain(status.motd.raw)
+        except Exception:
+            motd_plain = str(status.motd)
+
+    info = {
+        "host": MC_SERVER_HOST,
+        "port": MC_SERVER_PORT,
+        "version": status.version.name,
+        "protocol": status.version.protocol,
+        "players_online": status.players.online,
+        "players_max": status.players.max,
+        "motd_plain": motd_plain,
+        "motd_lines": [line for line in motd_plain.split("\n") if line.strip()],
+        "latency_ms": round(status.latency, 1),
+        "favicon": favicon_data_uri,
+    }
+    _mc_server_cache = info
+    _mc_server_cache_time = now
+    return info
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
@@ -231,6 +318,14 @@ def _csrf_token() -> str:
 @app.context_processor
 def inject_csrf_token() -> dict:
     return {"csrf_token": _csrf_token()}
+
+
+@app.context_processor
+def inject_server_info() -> dict:
+    """Inject MC server info on the login page for promotion."""
+    if request.endpoint == "login":
+        return {"server_info": get_mc_server_info()}
+    return {}
 
 
 def _csrf_valid() -> bool:

@@ -23,9 +23,11 @@
     font-family: "Consolas", "Courier New", "Microsoft YaHei", monospace;
     font-size: 14px;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
     min-height: 100vh;
+    gap: 0;
   }
   .card {
     background: var(--bg2);
@@ -43,6 +45,96 @@
     text-shadow: 0 0 8px rgba(80,208,80,0.3);
     margin-bottom: 24px;
     text-align: center;
+  }
+  /* ── Server promotion ─────────────────────── */
+  .promo {
+    width: 340px;
+    margin-top: 20px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 20px 24px;
+    text-align: center;
+  }
+  .promo-header {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .promo-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 4px;
+    image-rendering: pixelated;
+    flex-shrink: 0;
+  }
+  .promo-icon-placeholder {
+    width: 48px;
+    height: 48px;
+    border-radius: 4px;
+    background: rgba(58,138,58,0.15);
+    border: 1px dashed var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    flex-shrink: 0;
+  }
+  .promo-motd {
+    font-size: 15px;
+    font-weight: bold;
+    color: #fff;
+    text-align: left;
+    line-height: 1.5;
+  }
+  .promo-motd .motd-line2 {
+    font-size: 12px;
+    color: var(--muted);
+    font-weight: normal;
+  }
+  .promo-address {
+    font-size: 13px;
+    color: var(--cyan);
+    font-weight: bold;
+    margin: 8px 0 12px;
+    letter-spacing: 0.5px;
+  }
+  .promo-stats {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .promo-stats span {
+    white-space: nowrap;
+  }
+  .promo-stats .stat-val {
+    color: var(--text);
+    font-weight: bold;
+  }
+  .promo-stats .stat-online { color: var(--green); }
+  .promo-stats .stat-empty  { color: var(--muted); }
+  .promo-join {
+    font-size: 11px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    margin-top: 4px;
+  }
+  .promo-join code {
+    background: var(--bg);
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: var(--green);
+    font-family: inherit;
+  }
+  .promo-offline {
+    font-size: 12px;
+    color: var(--err);
   }
   label {
     display: block;
@@ -100,5 +192,30 @@
     <button type="submit">登 录</button>
   </form>
 </div>
+
+{% if server_info %}
+<div class="promo">
+  <div class="promo-header">
+    {% if server_info.favicon %}
+    <img class="promo-icon" src="{{ server_info.favicon }}" alt="Server Icon" width="48" height="48">
+    {% else %}
+    <div class="promo-icon-placeholder">▣</div>
+    {% endif %}
+    <div class="promo-motd">
+      {% for line in server_info.motd_lines %}
+      <div{% if loop.index > 1 %} class="motd-line2"{% endif %}>{{ line }}</div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="promo-address">{{ server_info.host }}</div>
+  <div class="promo-stats">
+    <span>🟢 <span class="stat-val{% if server_info.players_online > 0 %} stat-online{% else %} stat-empty{% endif %}">{{ server_info.players_online }}</span> / {{ server_info.players_max }} 在线</span>
+    <span>⏱ <span class="stat-val">{{ server_info.latency_ms }}ms</span></span>
+  </div>
+  <div class="promo-join">
+    在 Minecraft 中使用 <code>{{ server_info.host }}</code> 加入
+  </div>
+</div>
+{% endif %}
 </body>
 </html>
