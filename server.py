@@ -390,7 +390,12 @@ def api_poll():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
-        query_tasks = list_query_tasks(db)
+        try:
+            query_tasks = list_query_tasks(db)
+        except sqlite3.OperationalError as exc:
+            if "no such table: query_tasks" not in str(exc):
+                raise
+            query_tasks = []
     finally:
         db.close()
 
