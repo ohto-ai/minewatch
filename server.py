@@ -24,7 +24,7 @@ from flask import (
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from db import (
-    SCHEMA,
+    SCHEMA, _migrate,
     claim_next_sync_task,
     complete_sync_task,
     create_query_task,
@@ -37,7 +37,7 @@ from db import (
     update_user_role, update_user_password, delete_user,
     list_users, count_admins,
 )
-from config import FLASK_SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_SHARED_TOKEN
+from config import FLASK_SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_SHARED_TOKEN, BASE_URL
 
 # ── Config ────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "logs.db"
@@ -49,7 +49,7 @@ TZ = timezone(timedelta(hours=8))  # 北京时间
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
 
-VALID_ROLES = ("user", "admin")
+VALID_ROLES = ("user", "admin", "xcon")
 _SYNC_WORKER: threading.Thread | None = None
 _SYNC_WORKER_LOCK = threading.Lock()
 
@@ -59,6 +59,7 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
 
 
@@ -454,6 +455,28 @@ def _highlight_player(msg: str) -> str:
 
 # ── Auth routes ────────────────────────────────────────────────
 
+XCON_LOGIN_URL = f"{BASE_URL}/api/login"
+
+
+def xcon_authenticate(username: str, password: str) -> bool:
+    """Authenticate a user against the xcon API.
+
+    Returns True if the xcon API accepts the credentials (code == 0).
+    """
+    try:
+        resp = requests.post(
+            XCON_LOGIN_URL,
+            json={"username": username, "password": password},
+            headers={"User-Agent": "Minewatch/1.0"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        return isinstance(body, dict) and body.get("code") == 0
+    except Exception:
+        return False
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if session.get("user_id"):
@@ -467,10 +490,38 @@ def login():
         db = get_db()
         try:
             user = get_user_by_username(db, username)
-        finally:
-            db.close()
-        if user and check_password_hash(user["password_hash"], password):
-            # Read the intended destination stored server-side before clearing session
+            if user:
+                # ── Existing local user ──
+                if user["role"] == "xcon":
+                    # xcon users always authenticate against the external API
+                    if not xcon_authenticate(username, password):
+                        error = "XCon 认证失败，请检查用户名和密码"
+                        return render_template("login.html", error=error)
+                else:
+                    # Normal users — check local password hash
+                    if not check_password_hash(user["password_hash"], password):
+                        error = "用户名或密码错误"
+                        return render_template("login.html", error=error)
+            else:
+                # ── User not found locally — try xcon auto-registration ──
+                if not xcon_authenticate(username, password):
+                    error = "用户名或密码错误"
+                    return render_template("login.html", error=error)
+                # xcon auth succeeded — auto-create a local xcon user
+                try:
+                    create_user(db, username, "",
+                                role="xcon", password_plain=password)
+                except sqlite3.IntegrityError:
+                    # Race: another request created the user between our
+                    # lookup and insert. Re-fetch to get the new row.
+                    user = get_user_by_username(db, username)
+                    if user is None:
+                        error = "用户创建失败，请重试"
+                        return render_template("login.html", error=error)
+                else:
+                    user = get_user_by_username(db, username)
+
+            # ── Establish session ──
             raw_next = session.get("_next", "/")
             next_url = raw_next if (raw_next.startswith("/") and not raw_next.startswith("//")) else "/"
             session.clear()
@@ -478,7 +529,8 @@ def login():
             session["username"] = user["username"]
             session["role"] = user["role"]
             return redirect(next_url)
-        error = "用户名或密码错误"
+        finally:
+            db.close()
     return render_template("login.html", error=error)
 
 
@@ -891,8 +943,14 @@ def admin_create_user():
 
     db = get_db()
     try:
-        pwd_hash = generate_password_hash(password)
-        create_user(db, username, pwd_hash, role)
+        if role == "xcon":
+            # xcon users: store plaintext for viewing only; auth is always external
+            pwd_hash = ""
+            pwd_plain = password
+        else:
+            pwd_hash = generate_password_hash(password)
+            pwd_plain = ""
+        create_user(db, username, pwd_hash, role, password_plain=pwd_plain)
         flash(f"用户 {username!r} 创建成功", "success")
     except sqlite3.IntegrityError:
         flash(f"用户名 {username!r} 已存在", "error")
@@ -945,6 +1003,11 @@ def admin_update_password(user_id: int):
         target = get_user_by_id(db, user_id)
         if target is None:
             flash("用户不存在", "error")
+            return redirect(url_for("admin_users"))
+        if target["role"] == "xcon":
+            # xcon users authenticate against the external API; local
+            # passwords are not used for verification and cannot be changed.
+            flash("XCon 用户的密码由外部系统管理，无法在此修改", "error")
             return redirect(url_for("admin_users"))
         update_user_password(db, user_id, generate_password_hash(password))
         flash("密码已更新", "success")

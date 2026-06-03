@@ -107,6 +107,7 @@
 
   .badge-admin { color: var(--warn); font-weight: bold; }
   .badge-user  { color: var(--green); }
+  .badge-xcon  { color: #50b0d0; }
 
   /* Inline forms */
   .row-actions {
@@ -216,6 +217,7 @@
         <th>ID</th>
         <th>用户名</th>
         <th>角色</th>
+        <th>存储密码</th>
         <th>创建时间</th>
         <th>操作</th>
       </tr>
@@ -227,6 +229,13 @@
         <td>{{ u.username }}</td>
         <td>
           <span class="badge-{{ u.role }}">{{ u.role }}</span>
+        </td>
+        <td>
+          {% if u.role == 'xcon' and u.password_plain %}
+          <span style="color:var(--muted);font-size:11px;" title="仅用于查看，每次登录由 XCon 验证">{{ u.password_plain }}</span>
+          {% else %}
+          <span style="color:var(--muted);">—</span>
+          {% endif %}
         </td>
         <td>{{ u.created_at or '—' }}</td>
         <td>
@@ -242,11 +251,15 @@
               <button type="submit" class="btn">修改角色</button>
             </form>
             <!-- Change password -->
+            {% if u.role == 'xcon' %}
+            <span style="color:var(--muted);font-size:11px;">XCon 认证 · 不可修改</span>
+            {% else %}
             <form method="post" action="/admin/users/{{ u.id }}/password">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <input type="password" name="password" placeholder="新密码(≥6位)" minlength="6" required style="width:120px;">
               <button type="submit" class="btn">修改密码</button>
             </form>
+            {% endif %}
             <!-- Delete -->
             {% if u.username != current_username %}
             <form method="post" action="/admin/users/{{ u.id }}/delete"
@@ -259,7 +272,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px;">暂无用户</td></tr>
+      <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">暂无用户</td></tr>
       {% endfor %}
     </tbody>
   </table>

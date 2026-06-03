@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT    NOT NULL UNIQUE,
     password_hash TEXT    NOT NULL,
     role          TEXT    NOT NULL DEFAULT 'user',
+    password_plain TEXT   NOT NULL DEFAULT '',
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS sync_tasks (
@@ -62,11 +63,21 @@ VALUES (:log, :name, :time, :using)
 '''
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply schema migrations for older databases."""
+    # Migration: add password_plain column (added 2025-06 for xcon role support)
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN password_plain TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+
 def init_db(path: str | Path = "logs.db") -> sqlite3.Connection:
     """Initialise the database and return a connection."""
     conn = sqlite3.connect(str(path))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
     return conn
 
@@ -249,12 +260,13 @@ def list_query_tasks(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
 # ── User management ────────────────────────────────────────────
 
 def create_user(conn: sqlite3.Connection, username: str, password_hash: str,
-                role: str = "user") -> int:
+                role: str = "user", password_plain: str = "") -> int:
     """Create a new user and return its id."""
     with conn:
         cur = conn.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            (username, password_hash, role),
+            "INSERT INTO users (username, password_hash, role, password_plain) "
+            "VALUES (?, ?, ?, ?)",
+            (username, password_hash, role, password_plain),
         )
     return int(cur.lastrowid)
 
@@ -272,7 +284,8 @@ def create_sync_task(conn: sqlite3.Connection, remote_url: str) -> int:
 def get_user_by_username(conn: sqlite3.Connection, username: str) -> dict | None:
     """Return user dict for *username*, or None if not found."""
     row = conn.execute(
-        "SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?",
+        "SELECT id, username, password_hash, role, password_plain, created_at "
+        "FROM users WHERE username = ?",
         (username,),
     ).fetchone()
     if row is None:
@@ -282,14 +295,16 @@ def get_user_by_username(conn: sqlite3.Connection, username: str) -> dict | None
         "username": str(row[1]),
         "password_hash": str(row[2]),
         "role": str(row[3]),
-        "created_at": row[4],
+        "password_plain": str(row[4]) if row[4] is not None else "",
+        "created_at": row[5],
     }
 
 
 def get_user_by_id(conn: sqlite3.Connection, user_id: int) -> dict | None:
     """Return user dict for *user_id*, or None if not found."""
     row = conn.execute(
-        "SELECT id, username, password_hash, role, created_at FROM users WHERE id = ?",
+        "SELECT id, username, password_hash, role, password_plain, created_at "
+        "FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
     if row is None:
@@ -299,7 +314,8 @@ def get_user_by_id(conn: sqlite3.Connection, user_id: int) -> dict | None:
         "username": str(row[1]),
         "password_hash": str(row[2]),
         "role": str(row[3]),
-        "created_at": row[4],
+        "password_plain": str(row[4]) if row[4] is not None else "",
+        "created_at": row[5],
     }
 
 
@@ -310,13 +326,19 @@ def update_user_role(conn: sqlite3.Connection, user_id: int, role: str) -> None:
 
 
 def update_user_password(conn: sqlite3.Connection, user_id: int,
-                         password_hash: str) -> None:
-    """Update the password hash of an existing user."""
+                         password_hash: str, password_plain: str | None = None) -> None:
+    """Update the password hash (and optionally plaintext) of an existing user."""
     with conn:
-        conn.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
-            (password_hash, user_id),
-        )
+        if password_plain is not None:
+            conn.execute(
+                "UPDATE users SET password_hash = ?, password_plain = ? WHERE id = ?",
+                (password_hash, password_plain, user_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (password_hash, user_id),
+            )
 
 
 def delete_user(conn: sqlite3.Connection, user_id: int) -> None:
@@ -326,16 +348,17 @@ def delete_user(conn: sqlite3.Connection, user_id: int) -> None:
 
 
 def list_users(conn: sqlite3.Connection) -> list[dict]:
-    """Return all users (without password hashes)."""
+    """Return all users (without password hashes, with plaintext for xcon users)."""
     rows = conn.execute(
-        "SELECT id, username, role, created_at FROM users ORDER BY id ASC"
+        "SELECT id, username, role, password_plain, created_at FROM users ORDER BY id ASC"
     ).fetchall()
     return [
         {
             "id": int(r[0]),
             "username": str(r[1]),
             "role": str(r[2]),
-            "created_at": r[3],
+            "password_plain": str(r[3]) if r[3] is not None else "",
+            "created_at": r[4],
         }
         for r in rows
     ]
