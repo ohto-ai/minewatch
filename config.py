@@ -76,3 +76,6 @@ FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY") or _secrets.token_hex(32)
 # Default admin credentials (used only when no users exist in the database).
 ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin")
+
+# Shared token used by inter-server sync requests to /api/logs/export.
+SYNC_SHARED_TOKEN: str = os.getenv("SYNC_SHARED_TOKEN", "")

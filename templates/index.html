@@ -496,6 +496,7 @@
   let maxId   = parseInt(logArea.dataset.maxId)   || 0;
   let pollTimer = null;
   let failCount = 0;
+  let shouldPoll = true;
 
   function buildPollUrl() {
     const params = new URLSearchParams(window.location.search);
@@ -509,6 +510,7 @@
       const resp = await fetch(buildPollUrl());
       if (resp.status === 401) {
         statusEl.textContent = '会话已过期，请刷新页面重新登录';
+        shouldPoll = false;
         clearTimeout(pollTimer);
         return;
       }
@@ -551,7 +553,9 @@
       }
       console.warn('Poll error:', e);
     } finally {
-      pollTimer = setTimeout(poll, POLL_INTERVAL);
+      if (shouldPoll) {
+        pollTimer = setTimeout(poll, POLL_INTERVAL);
+      }
     }
   }
 

@@ -244,7 +244,7 @@
             <!-- Delete -->
             {% if u.username != current_username %}
             <form method="post" action="/admin/users/{{ u.id }}/delete"
-                  onsubmit="return confirm('确认删除用户 {{ u.username }}？');">
+                  onsubmit='return confirm("确认删除用户 " + {{ u.username|tojson }} + "？");'>
               <button type="submit" class="btn btn-danger">删除</button>
             </form>
             {% endif %}

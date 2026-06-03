@@ -35,7 +35,7 @@ from db import (
     update_user_role, update_user_password, delete_user,
     list_users, count_admins,
 )
-from config import FLASK_SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD
+from config import FLASK_SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_SHARED_TOKEN
 
 # ── Config ────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "logs.db"
@@ -141,7 +141,8 @@ def admin_required(f):
         if not session.get("user_id"):
             if request.is_json or request.path.startswith("/api/"):
                 return jsonify({"error": "authentication required"}), 401
-            return redirect(url_for("login", next=request.path))
+            session["_next"] = request.path
+            return redirect(url_for("login"))
         if session.get("role") != "admin":
             if request.is_json or request.path.startswith("/api/"):
                 return jsonify({"error": "admin role required"}), 403
@@ -224,6 +225,9 @@ def _fetch_remote_sync_batch(
     session: requests.Session, remote_url: str, after_time: int, after_id: int
 ) -> list[dict]:
     """Fetch one ascending batch from another Minewatch server."""
+    headers = {}
+    if SYNC_SHARED_TOKEN:
+        headers["X-Sync-Token"] = SYNC_SHARED_TOKEN
     resp = session.get(
         f"{remote_url}/api/logs/export",
         params={
@@ -231,6 +235,7 @@ def _fetch_remote_sync_batch(
             "after_id": after_id,
             "limit": SYNC_BATCH_SIZE,
         },
+        headers=headers,
         timeout=15,
     )
     resp.raise_for_status()
@@ -590,6 +595,11 @@ def api_query_tasks():
 @app.route("/api/sync_tasks", methods=["GET", "POST"])
 def api_sync_tasks():
     """Create/list database sync tasks."""
+    if not session.get("user_id"):
+        return jsonify({"error": "authentication required"}), 401
+    if request.method == "POST" and session.get("role") != "admin":
+        return jsonify({"error": "admin role required"}), 403
+
     db = get_db()
     try:
         if request.method == "POST":
@@ -642,6 +652,13 @@ def api_logs():
 @app.route("/api/logs/export")
 def api_logs_export():
     """Cursor-based export endpoint for one-way DB sync."""
+    if not session.get("user_id"):
+        token = request.headers.get("X-Sync-Token", "").strip()
+        auth = request.headers.get("Authorization", "").strip()
+        bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if not SYNC_SHARED_TOKEN or (token != SYNC_SHARED_TOKEN and bearer != SYNC_SHARED_TOKEN):
+            return jsonify({"error": "authentication required"}), 401
+
     after_time = request.args.get("after_time", 0, type=int)
     after_id = request.args.get("after_id", 0, type=int)
     limit = request.args.get("limit", SYNC_BATCH_SIZE, type=int)
@@ -848,7 +865,10 @@ def admin_update_role(user_id: int):
     try:
         # Prevent removing the last admin
         target = get_user_by_id(db, user_id)
-        if target and target["role"] == "admin" and role != "admin":
+        if target is None:
+            flash("用户不存在", "error")
+            return redirect(url_for("admin_users"))
+        if target["role"] == "admin" and role != "admin":
             if count_admins(db) <= 1:
                 flash("无法降级：系统中至少需要保留一名管理员", "error")
                 return redirect(url_for("admin_users"))
@@ -868,6 +888,10 @@ def admin_update_password(user_id: int):
         return redirect(url_for("admin_users"))
     db = get_db()
     try:
+        target = get_user_by_id(db, user_id)
+        if target is None:
+            flash("用户不存在", "error")
+            return redirect(url_for("admin_users"))
         update_user_password(db, user_id, generate_password_hash(password))
         flash("密码已更新", "success")
     finally:
