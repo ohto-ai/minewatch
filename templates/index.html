@@ -562,8 +562,17 @@
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({keyword: keyword}),
       });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+      let data;
+      if (resp.ok) {
+        data = await resp.json();
+      } else {
+        let errMsg = 'HTTP ' + resp.status;
+        try {
+          const errData = await resp.json();
+          errMsg = errData.error || errMsg;
+        } catch (e) {}
+        throw new Error(errMsg);
+      }
       statusEl.textContent = '查询任务已创建 #' + data.task_id;
       if (queryInputEl) queryInputEl.value = '';
       const listResp = await fetch('/api/query_tasks');

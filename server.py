@@ -264,12 +264,19 @@ def api_query_tasks():
             keyword = payload.get("keyword") if isinstance(payload, dict) else ""
             if not keyword:
                 keyword = request.form.get("keyword", "")
-            keyword = (keyword or "").strip()
+            if not isinstance(keyword, str):
+                return jsonify({"error": "keyword must be a string"}), 400
+            keyword = keyword.strip()
             if not keyword:
                 return jsonify({"error": "keyword required"}), 400
             if len(keyword) > 100:
                 return jsonify({"error": "keyword too long"}), 400
-            task_id = create_query_task(db, keyword)
+            try:
+                task_id = create_query_task(db, keyword)
+            except sqlite3.OperationalError as exc:
+                if "no such table: query_tasks" not in str(exc):
+                    raise
+                return jsonify({"error": "query task storage is not initialized yet"}), 503
             return jsonify({"ok": True, "task_id": task_id})
 
         return jsonify({"tasks": list_query_tasks_safe(db)})
