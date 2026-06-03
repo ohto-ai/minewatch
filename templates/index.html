@@ -69,10 +69,29 @@
 
   .spacer { flex: 1; }
 
+  .page-shell {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    max-width: 1360px;
+    margin: 0 auto;
+    padding: 10px 12px 0;
+  }
+  .content-col {
+    flex: 1;
+    min-width: 0;
+  }
+  .side-col {
+    flex: 0 0 340px;
+    width: 340px;
+    position: sticky;
+    top: 62px;
+  }
+
   /* ── Log area ──────────────────────────────── */
   .log-area {
-    max-width: 1000px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     padding: 12px 16px;
     min-height: 60vh;
   }
@@ -233,6 +252,74 @@
   .btn-apply:hover, .btn-reset:hover { border-color: var(--accent); background: var(--hover-bg); }
   .btn-apply { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+  /* ── Query tasks ───────────────────────────── */
+  .query-box {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 4px;
+  }
+  .query-title {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 0.5px;
+  }
+  .query-create {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .query-create input {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    font: inherit; font-size: 12px;
+    width: 180px;
+  }
+  .query-tasks {
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 62vh;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
+  .task-badge {
+    border: 1px solid var(--border);
+    background: var(--bg);
+    padding: 6px 8px;
+    border-radius: 4px;
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.4;
+  }
+  .task-queued { color: #9a9a9a; }
+  .task-running { color: var(--gold); }
+  .task-completed { color: var(--green); }
+  .task-failed { color: var(--err); }
+
+  @media (max-width: 1180px) {
+    .page-shell {
+      flex-direction: column;
+    }
+    .side-col {
+      position: static;
+      width: 100%;
+      flex-basis: auto;
+    }
+    .query-tasks {
+      max-height: 220px;
+    }
+  }
+
   /* ── Footer ────────────────────────────────── */
   footer {
     text-align: center;
@@ -291,47 +378,70 @@
   <button onclick="location.reload()">↻ 刷新</button>
 </div>
 
-<!-- ── Logs ──────────────────────────────────── -->
-<div class="log-area" data-max-time="{{ max_time }}" data-max-id="{{ max_id }}">
-  {% for line in lines %}
-  {{ line|safe }}
-  {% else %}
-  <div style="text-align:center;padding:80px 0;color:var(--muted);">
-    暂无日志数据
-  </div>
-  {% endfor %}
-</div>
+<div class="page-shell">
+  <div class="content-col">
+    <!-- ── Logs ──────────────────────────────────── -->
+    <div class="log-area" data-max-time="{{ max_time }}" data-max-id="{{ max_id }}">
+      {% for line in lines %}
+      {{ line|safe }}
+      {% else %}
+      <div style="text-align:center;padding:80px 0;color:var(--muted);">
+        暂无日志数据
+      </div>
+      {% endfor %}
+    </div>
 
-<!-- ── Pagination ────────────────────────────── -->
-{% if total_pages > 1 %}
-<div class="pager">
-  {% if page > 1 %}
-  <a class="nav" href="?page=1{{ qs_prefix }}">««</a>
-  <a class="nav" href="?page={{ page-1 }}{{ qs_prefix }}">«</a>
-  {% else %}
-  <span class="nav-disabled">««</span>
-  <span class="nav-disabled">«</span>
-  {% endif %}
+    <!-- ── Pagination ────────────────────────────── -->
+    {% if total_pages > 1 %}
+    <div class="pager">
+      {% if page > 1 %}
+      <a class="nav" href="?page=1{{ qs_prefix }}">««</a>
+      <a class="nav" href="?page={{ page-1 }}{{ qs_prefix }}">«</a>
+      {% else %}
+      <span class="nav-disabled">««</span>
+      <span class="nav-disabled">«</span>
+      {% endif %}
 
-  {% for p in page_nums %}
-    {% if p is none %}
-    <span class="gap">…</span>
-    {% elif p == page %}
-    <span class="cur">{{ p }}</span>
-    {% else %}
-    <a href="?page={{ p }}{{ qs_prefix }}">{{ p }}</a>
+      {% for p in page_nums %}
+        {% if p is none %}
+        <span class="gap">…</span>
+        {% elif p == page %}
+        <span class="cur">{{ p }}</span>
+        {% else %}
+        <a href="?page={{ p }}{{ qs_prefix }}">{{ p }}</a>
+        {% endif %}
+      {% endfor %}
+
+      {% if page < total_pages %}
+      <a class="nav" href="?page={{ page+1 }}{{ qs_prefix }}">»</a>
+      <a class="nav" href="?page={{ total_pages }}{{ qs_prefix }}">»»</a>
+      {% else %}
+      <span class="nav-disabled">»</span>
+      <span class="nav-disabled">»»</span>
+      {% endif %}
+    </div>
     {% endif %}
-  {% endfor %}
-
-  {% if page < total_pages %}
-  <a class="nav" href="?page={{ page+1 }}{{ qs_prefix }}">»</a>
-  <a class="nav" href="?page={{ total_pages }}{{ qs_prefix }}">»»</a>
-  {% else %}
-  <span class="nav-disabled">»</span>
-  <span class="nav-disabled">»»</span>
-  {% endif %}
+  </div>
+  <aside class="side-col">
+    <div class="query-box">
+      <div class="query-title">查询任务</div>
+      <div class="query-create">
+        <input id="query-keyword" type="text" placeholder="输入关键词后提交到 fetcher 队列">
+        <button id="query-submit" type="button">创建任务</button>
+      </div>
+      <div class="query-tasks" id="query-tasks">
+        {% for t in query_tasks %}
+        <span class="task-badge task-{{ t.status }}">
+          #{{ t.id }} {{ t.keyword }} ·
+          {% if t.status == "queued" %}排队中{% elif t.status == "running" %}执行中{% elif t.status == "completed" %}已完成{% elif t.status == "failed" %}失败{% else %}排队中{% endif %}
+        </span>
+        {% else %}
+        <span>暂无查询任务</span>
+        {% endfor %}
+      </div>
+    </div>
+  </aside>
 </div>
-{% endif %}
 
 <!-- ── Footer ────────────────────────────────── -->
 <footer>
@@ -346,6 +456,9 @@
   const logArea = document.querySelector('.log-area');
   const statusEl = document.getElementById('poll-status');
   const metaEl = document.querySelector('.topbar .meta');
+  const queryTasksEl = document.getElementById('query-tasks');
+  const queryInputEl = document.getElementById('query-keyword');
+  const querySubmitEl = document.getElementById('query-submit');
 
   // Cursor: (maxTime, maxId) — only fetch rows with time >= maxTime AND id > maxId
   let maxTime = parseInt(logArea.dataset.maxTime) || 0;
@@ -386,6 +499,7 @@
         statusEl.textContent = '实时监听中 (15s) — +' + data.count + ' 条新消息';
         setTimeout(function() { statusEl.textContent = '实时监听中 (15s)'; }, 3000);
       }
+      renderQueryTasks(data.query_tasks || []);
 
       // Trim old lines to keep DOM at most 500
       while (logArea.children.length > 500) {
@@ -404,8 +518,88 @@
     }
   }
 
+  function renderQueryTasks(tasks) {
+    const statusMap = {
+      queued: '排队中',
+      running: '执行中',
+      completed: '已完成',
+      failed: '失败',
+    };
+    if (!queryTasksEl) return;
+    if (!tasks || tasks.length === 0) {
+      queryTasksEl.innerHTML = '<span>暂无查询任务</span>';
+      return;
+    }
+    queryTasksEl.innerHTML = tasks.map(function(task) {
+      let status = statusMap[task.status] ? task.status : 'queued';
+      let text = '#' + task.id + ' ' + escapeHtml(task.keyword || '') + ' · ' + statusMap[status];
+      if (status === 'completed') {
+        text += ' (' + task.inserted_count + '/' + task.fetched_count + ')';
+      }
+      if (status === 'failed' && task.error) {
+        text += ' (' + escapeHtml(task.error) + ')';
+      }
+      return '<span class="task-badge task-' + status + '" title="' + text + '">' + text + '</span>';
+    }).join('');
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  async function createQueryTask() {
+    const keyword = (queryInputEl && queryInputEl.value || '').trim();
+    if (!keyword || !querySubmitEl) return;
+    querySubmitEl.disabled = true;
+    try {
+      const resp = await fetch('/api/query_tasks', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({keyword: keyword}),
+      });
+      let data;
+      if (resp.ok) {
+        data = await resp.json();
+      } else {
+        let errMsg = 'HTTP ' + resp.status;
+        try {
+          const errData = await resp.json();
+          errMsg = errData.error || errMsg;
+        } catch (e) {}
+        throw new Error(errMsg);
+      }
+      statusEl.textContent = '查询任务已创建 #' + data.task_id;
+      if (queryInputEl) queryInputEl.value = '';
+      const listResp = await fetch('/api/query_tasks');
+      if (listResp.ok) {
+        const listData = await listResp.json();
+        renderQueryTasks(listData.tasks || []);
+      }
+    } catch (e) {
+      statusEl.textContent = '创建任务失败: ' + e.message;
+    } finally {
+      querySubmitEl.disabled = false;
+    }
+  }
+
   // Start first poll after interval
   pollTimer = setTimeout(poll, POLL_INTERVAL);
+  if (querySubmitEl) {
+    querySubmitEl.addEventListener('click', createQueryTask);
+  }
+  if (queryInputEl) {
+    queryInputEl.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        createQueryTask();
+      }
+    });
+  }
 
   window.addEventListener('beforeunload', function() {
     clearTimeout(pollTimer);

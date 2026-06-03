@@ -30,6 +30,7 @@ cp .env.example .env
 | `MC_BASE_URL` | API 地址 | `http://xcon.top:8585` |
 | `MC_USERNAME` | 登录账号 | — |
 | `MC_PASSWORD` | 登录密码 | — |
+| `MC_QUERY_TASK_STEP_INTERVAL` | 查询任务串行执行间隔（秒） | `1` |
 
 ### 2. 启动日志采集
 
@@ -62,6 +63,9 @@ python server.py
 - **实时增量更新** — AJAX 轮询，只拉取新消息，不刷新整页
 - **子服筛选** — 按服务器名称过滤
 - **关键词搜索** — 模糊匹配日志内容
+- **查询任务队列** — 在 Web 创建关键词任务，由 fetcher 排队执行并回填日志库
+  - 同一调度周期内会按队列顺序逐个执行全部待处理任务
+  - 任务间隔可通过 `MC_QUERY_TASK_STEP_INTERVAL` 控制，且不会超过当前调度间隔
 - **时间范围** — datetime-local 起止筛选
 - **隐藏堆栈** — 仅显示标准日志头行
 - **分页** — 50/100/200 条/页可调
@@ -76,6 +80,8 @@ python server.py
 | `GET /api/logs` | JSON 格式日志（分页） |
 | `GET /api/stats` | 统计信息（总数、各子服分布） |
 | `GET /api/poll` | 增量轮询，参数 `since_time` & `since_id` |
+| `GET /api/query_tasks` | 查询任务列表（队列/执行中/完成/失败） |
+| `POST /api/query_tasks` | 创建查询任务，JSON: `{"keyword":"..."}` |
 
 ## 数据库
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 from flask import Flask, render_template, request, jsonify
+from db import create_query_task, list_query_tasks
 
 # ── Config ────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "logs.db"
@@ -25,6 +26,16 @@ def get_db() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
+
+
+def list_query_tasks_safe(db: sqlite3.Connection) -> list[dict]:
+    """List recent query tasks, tolerating older DBs without that table."""
+    try:
+        return list_query_tasks(db)
+    except sqlite3.OperationalError as exc:
+        if "no such table: query_tasks" not in str(exc):
+            raise
+        return []
 
 # ── Log parsing & formatting ───────────────────────────────────
 
@@ -203,6 +214,7 @@ def index():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
+        query_tasks = list_query_tasks_safe(db)
     finally:
         db.close()
 
@@ -238,7 +250,38 @@ def index():
         max_time=max_time,
         max_id=max_id,
         now_ts=int(time.time()),
+        query_tasks=query_tasks,
     )
+
+
+@app.route("/api/query_tasks", methods=["GET", "POST"])
+def api_query_tasks():
+    """Create/list fetcher query tasks."""
+    db = get_db()
+    try:
+        if request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            keyword = payload.get("keyword") if isinstance(payload, dict) else ""
+            if not keyword:
+                keyword = request.form.get("keyword", "")
+            if not isinstance(keyword, str):
+                return jsonify({"error": "keyword must be a string"}), 400
+            keyword = keyword.strip()
+            if not keyword:
+                return jsonify({"error": "keyword required"}), 400
+            if len(keyword) > 100:
+                return jsonify({"error": "keyword too long"}), 400
+            try:
+                task_id = create_query_task(db, keyword)
+            except sqlite3.OperationalError as exc:
+                if "no such table: query_tasks" not in str(exc):
+                    raise
+                return jsonify({"error": "query task storage is not initialized yet"}), 503
+            return jsonify({"ok": True, "task_id": task_id})
+
+        return jsonify({"tasks": list_query_tasks_safe(db)})
+    finally:
+        db.close()
 
 
 @app.route("/api/logs")
@@ -364,6 +407,7 @@ def api_poll():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
+        query_tasks = list_query_tasks_safe(db)
     finally:
         db.close()
 
@@ -374,6 +418,7 @@ def api_poll():
         "max_id": new_max_id,
         "last_update": last_update,
         "total": total,
+        "query_tasks": query_tasks,
     })
 
 # ── Pagination helpers ─────────────────────────────────────────

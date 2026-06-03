@@ -9,6 +9,17 @@ import os
 from pathlib import Path
 
 
+def _get_env_float(name: str, default: float) -> float:
+    """Read a float environment variable with a safe fallback."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _load_dotenv() -> None:
     """Load .env file from project root (no external dependency needed)."""
     env_path = Path(__file__).parent / ".env"
@@ -51,6 +62,7 @@ CREDENTIALS = {
 
 DB_PATH = "logs.db"
 POLL_INTERVAL = 3.0
+QUERY_TASK_STEP_INTERVAL = _get_env_float("MC_QUERY_TASK_STEP_INTERVAL", 1.0)
 
 # JWT expiry buffer (seconds) — re-login this many seconds before token expires
 TOKEN_EXPIRY_BUFFER = 60
