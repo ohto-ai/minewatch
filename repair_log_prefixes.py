@@ -19,13 +19,21 @@ import sqlite3
 from pathlib import Path
 
 # ── Same pattern as _RE_ANSI_REMNANT in fetcher.py ───────────────
-# Matches ANSI-code remnants like [m>, [0m>, [38;2;255;255;255m>
-# that survive after the ESC byte has been stripped upstream.
-_RE_ANSI_REMNANT = re.compile(r"^(?:\[[0-9;]*m>?\s*)+")
+# Matches ANSI-code remnants like [m>, [0m>, [38;2;255;255;255m>, [K
+# and stray "> " console prompt artifacts that survive after the ESC
+# byte has been stripped upstream.
+_RE_ANSI_REMNANT = re.compile(r"^(?:> ?|\[[0-9;]*[mKGJ]>?\s*)+")
 
-# GLOB pre-filter: lines starting with '[' that contain 'm' very early.
-# This is a fast indexed-ish scan; the regex does the precise match.
-_GLOB_PREFILTER = "[[]*m*"
+# GLOB pre-filters: fast indexed-ish scan; the regex does the precise match.
+# Catch lines starting with:
+#   "> ..."          — stray console prompt artifact
+#   "[...K..." early — ANSI line-clear remnant ([K)
+#   "[...m..." early — ANSI SGR remnant ([0m, [32m, etc.)
+_GLOB_PREFILTERS = [
+    ">*",        # leading >
+    "[[]*K*",    # [K remnant
+    "[[]*m*",    # [0m, [32m etc.
+]
 
 
 def needs_repair(log: str) -> bool:
@@ -63,9 +71,11 @@ def repair(db_path: str, *, dry_run: bool = True) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
 
     # ── Phase 1: find candidate rows ──
+    # Build OR-ed GLOB query from the pre-filter list
+    where_clause = " OR ".join(["log GLOB ?"] * len(_GLOB_PREFILTERS))
     candidates = conn.execute(
-        "SELECT id, log, name, time FROM logs WHERE log GLOB ?",
-        (_GLOB_PREFILTER,),
+        f"SELECT id, log, name, time FROM logs WHERE {where_clause}",
+        tuple(_GLOB_PREFILTERS),
     ).fetchall()
 
     dirty: list[dict] = []
@@ -138,11 +148,12 @@ def repair(db_path: str, *, dry_run: bool = True) -> None:
           f"{error_count} errors")
 
     # Verify
+    where_clause = " OR ".join(["log GLOB ?"] * len(_GLOB_PREFILTERS))
     remaining = conn.execute(
-        "SELECT COUNT(*) FROM logs WHERE log GLOB ?",
-        (_GLOB_PREFILTER,),
+        f"SELECT COUNT(*) FROM logs WHERE {where_clause}",
+        tuple(_GLOB_PREFILTERS),
     ).fetchone()[0]
-    print(f"Rows matching GLOB pre-filter after repair: {remaining}")
+    print(f"Rows matching GLOB pre-filters after repair: {remaining}")
     conn.close()
 
 
