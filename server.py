@@ -4,6 +4,7 @@ MC Log Viewer — Flask web server with MC chat-style rendering.
 Run separately from main.py:  python server.py
 """
 
+import ipaddress
 import re
 import sqlite3
 import threading
@@ -73,6 +74,19 @@ def _normalize_remote_url(raw: str) -> str | None:
     parsed = urlsplit(value)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
+    # Reject URLs that contain userinfo (user:password@host)
+    if parsed.username or parsed.password:
+        return None
+    # Reject requests to loopback or link-local addresses to prevent SSRF
+    hostname = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_loopback or addr.is_link_local or addr.is_private:
+            return None
+    except ValueError:
+        # hostname is a domain name; block well-known local names
+        if hostname.lower() in {"localhost", "ip6-localhost", "ip6-loopback"}:
+            return None
     path = parsed.path.rstrip("/")
     for suffix in ("/api/logs/export", "/api/logs"):
         if path.endswith(suffix):
@@ -98,13 +112,17 @@ def _coerce_sync_entries(entries: object) -> list[dict]:
             epoch_ms = int(entry.get("time"))
         except (TypeError, ValueError):
             continue
+        try:
+            id_val = int(entry.get("id", 0))
+        except (TypeError, ValueError):
+            id_val = 0
         using = entry.get("using", "")
         clean_entries.append({
             "log": log,
             "name": name,
             "time": epoch_ms,
             "using": using if isinstance(using, str) else "",
-            "id": int(entry.get("id", 0)) if isinstance(entry.get("id", 0), int) else 0,
+            "id": id_val,
         })
     return clean_entries
 
@@ -165,6 +183,10 @@ def _process_one_sync_task() -> bool:
     except Exception as exc:
         if "task_id" in locals():
             fail_sync_task(db, task_id, str(exc))
+        else:
+            # Exception before any task was claimed – sleep briefly to avoid
+            # a tight busy-loop on persistent errors (e.g., DB locked).
+            time.sleep(1)
         return True
     finally:
         session.close()
