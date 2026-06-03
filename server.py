@@ -79,7 +79,10 @@ def _ensure_default_admin() -> None:
         row = db.execute("SELECT COUNT(*) FROM users").fetchone()
         if row and row[0] == 0:
             pwd_hash = generate_password_hash(ADMIN_PASSWORD)
-            create_user(db, ADMIN_USERNAME, pwd_hash, role="admin")
+            try:
+                create_user(db, ADMIN_USERNAME, pwd_hash, role="admin")
+            except sqlite3.IntegrityError:
+                return
             print(f"[auth] Default admin created: username={ADMIN_USERNAME!r}")
     except sqlite3.OperationalError:
         pass  # users table may not exist yet (init_db called separately)
