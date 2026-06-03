@@ -102,9 +102,9 @@ python backfill_time_keywords.py --from-hour 8 --to-hour 12
 | `GET /api/logs` | JSON 格式日志（分页） |
 | `GET /api/stats` | 统计信息（总数、各子服分布） |
 | `GET /api/poll` | 增量轮询，参数 `since_time` & `since_id` |
-| `GET /api/query_tasks` | 查询任务列表（需登录，队列/执行中/完成/失败） |
-| `POST /api/query_tasks` | 创建查询任务（需 user/admin 权限），JSON: `{"keyword":"..."}` |
-| `GET /api/sync_tasks` | 数据库同步任务列表（需登录） |
+| `GET /api/query_tasks` | 查询任务列表（需管理员权限，队列/执行中/完成/失败） |
+| `POST /api/query_tasks` | 创建查询任务（需管理员权限），JSON: `{"keyword":"..."}` |
+| `GET /api/sync_tasks` | 数据库同步任务列表（需管理员权限） |
 | `POST /api/sync_tasks` | 创建同步任务（需管理员权限），JSON: `{"remote_url":"http://host:5000"}` |
 | `GET /api/logs/export` | 供另一台 Minewatch 增量拉取日志（登录或 `X-Sync-Token`/Bearer），参数 `after_time` & `after_id` |
 

@@ -494,6 +494,7 @@ def logout():
 @app.route("/")
 @login_required
 def index():
+    role = session.get("role", "user")
     page        = request.args.get("page", 1, type=int)
     per_page    = request.args.get("per_page", min(PER_PAGE, 200), type=int)
     per_page    = min(per_page, 200)
@@ -550,8 +551,8 @@ def index():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
-        query_tasks = list_query_tasks_safe(db)
-        sync_tasks = list_sync_tasks_safe(db)
+        query_tasks = list_query_tasks_safe(db) if role == "admin" else []
+        sync_tasks = list_sync_tasks_safe(db) if role == "admin" else []
     finally:
         db.close()
 
@@ -567,8 +568,6 @@ def index():
     if per_page != PER_PAGE: qs_parts.append(f"per_page={per_page}")
     qs_base = "&".join(qs_parts)
     qs_prefix = f"&{qs_base}" if qs_base else ""
-
-    role = session.get("role", "user")
 
     return render_template(
         "index.html",
@@ -599,11 +598,10 @@ def index():
 @app.route("/api/query_tasks", methods=["GET", "POST"])
 def api_query_tasks():
     """Create/list fetcher query tasks."""
-    # GET is read-only → login required; POST mutates → user/admin required
     if not session.get("user_id"):
         return jsonify({"error": "authentication required"}), 401
-    if request.method == "POST" and session.get("role") not in ("user", "admin"):
-        return jsonify({"error": "permission denied"}), 403
+    if session.get("role") != "admin":
+        return jsonify({"error": "admin role required"}), 403
 
     db = get_db()
     try:
@@ -639,7 +637,7 @@ def api_sync_tasks():
     """Create/list database sync tasks."""
     if not session.get("user_id"):
         return jsonify({"error": "authentication required"}), 401
-    if request.method == "POST" and session.get("role") != "admin":
+    if session.get("role") != "admin":
         return jsonify({"error": "admin role required"}), 403
 
     db = get_db()
@@ -829,8 +827,9 @@ def api_poll():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
-        query_tasks = list_query_tasks_safe(db)
-        sync_tasks = list_sync_tasks_safe(db)
+        role = session.get("role", "user")
+        query_tasks = list_query_tasks_safe(db) if role == "admin" else []
+        sync_tasks = list_sync_tasks_safe(db) if role == "admin" else []
     finally:
         db.close()
 
