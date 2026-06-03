@@ -69,10 +69,29 @@
 
   .spacer { flex: 1; }
 
+  .page-shell {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    max-width: 1360px;
+    margin: 0 auto;
+    padding: 10px 12px 0;
+  }
+  .content-col {
+    flex: 1;
+    min-width: 0;
+  }
+  .side-col {
+    flex: 0 0 340px;
+    width: 340px;
+    position: sticky;
+    top: 62px;
+  }
+
   /* ── Log area ──────────────────────────────── */
   .log-area {
-    max-width: 1000px;
-    margin: 0 auto;
+    max-width: none;
+    margin: 0;
     padding: 12px 16px;
     min-height: 60vh;
   }
@@ -237,13 +256,18 @@
   .query-box {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    min-width: 300px;
-    max-width: 380px;
-    padding: 6px 8px;
+    gap: 8px;
+    width: 100%;
+    padding: 10px;
     border: 1px solid var(--border);
     background: rgba(0, 0, 0, 0.15);
     border-radius: 4px;
+  }
+  .query-title {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: bold;
+    letter-spacing: 0.5px;
   }
   .query-create {
     display: flex;
@@ -259,28 +283,42 @@
     width: 180px;
   }
   .query-tasks {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--muted);
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    max-height: 94px;
+    gap: 6px;
+    max-height: 62vh;
     overflow-y: auto;
-    padding-right: 2px;
+    padding-right: 4px;
   }
   .task-badge {
     border: 1px solid var(--border);
     background: var(--bg);
-    padding: 2px 6px;
+    padding: 6px 8px;
     border-radius: 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    word-break: break-word;
+    line-height: 1.4;
   }
   .task-queued { color: #9a9a9a; }
   .task-running { color: var(--gold); }
   .task-completed { color: var(--green); }
   .task-failed { color: var(--err); }
+
+  @media (max-width: 1180px) {
+    .page-shell {
+      flex-direction: column;
+    }
+    .side-col {
+      position: static;
+      width: 100%;
+      flex-basis: auto;
+    }
+    .query-tasks {
+      max-height: 220px;
+    }
+  }
 
   /* ── Footer ────────────────────────────────── */
   footer {
@@ -336,69 +374,74 @@
     </div>
   </form>
 
-  <div class="query-box">
-    <div class="query-create">
-      <span class="flabel">查询任务:</span>
-      <input id="query-keyword" type="text" placeholder="输入关键词后提交到 fetcher 队列">
-      <button id="query-submit" type="button">创建任务</button>
-    </div>
-    <div class="query-tasks" id="query-tasks">
-      {% for t in query_tasks %}
-      <span class="task-badge task-{{ t.status }}">
-        #{{ t.id }} {{ t.keyword }} ·
-        {% if t.status == "queued" %}排队中{% elif t.status == "running" %}执行中{% elif t.status == "completed" %}已完成{% elif t.status == "failed" %}失败{% else %}排队中{% endif %}
-      </span>
-      {% else %}
-      <span>暂无查询任务</span>
-      {% endfor %}
-    </div>
-  </div>
-
   <span class="meta">共 {{ total }} 条 &nbsp;|&nbsp; 更新于 {{ last_update }}</span>
   <button onclick="location.reload()">↻ 刷新</button>
 </div>
 
-<!-- ── Logs ──────────────────────────────────── -->
-<div class="log-area" data-max-time="{{ max_time }}" data-max-id="{{ max_id }}">
-  {% for line in lines %}
-  {{ line|safe }}
-  {% else %}
-  <div style="text-align:center;padding:80px 0;color:var(--muted);">
-    暂无日志数据
-  </div>
-  {% endfor %}
-</div>
+<div class="page-shell">
+  <div class="content-col">
+    <!-- ── Logs ──────────────────────────────────── -->
+    <div class="log-area" data-max-time="{{ max_time }}" data-max-id="{{ max_id }}">
+      {% for line in lines %}
+      {{ line|safe }}
+      {% else %}
+      <div style="text-align:center;padding:80px 0;color:var(--muted);">
+        暂无日志数据
+      </div>
+      {% endfor %}
+    </div>
 
-<!-- ── Pagination ────────────────────────────── -->
-{% if total_pages > 1 %}
-<div class="pager">
-  {% if page > 1 %}
-  <a class="nav" href="?page=1{{ qs_prefix }}">««</a>
-  <a class="nav" href="?page={{ page-1 }}{{ qs_prefix }}">«</a>
-  {% else %}
-  <span class="nav-disabled">««</span>
-  <span class="nav-disabled">«</span>
-  {% endif %}
+    <!-- ── Pagination ────────────────────────────── -->
+    {% if total_pages > 1 %}
+    <div class="pager">
+      {% if page > 1 %}
+      <a class="nav" href="?page=1{{ qs_prefix }}">««</a>
+      <a class="nav" href="?page={{ page-1 }}{{ qs_prefix }}">«</a>
+      {% else %}
+      <span class="nav-disabled">««</span>
+      <span class="nav-disabled">«</span>
+      {% endif %}
 
-  {% for p in page_nums %}
-    {% if p is none %}
-    <span class="gap">…</span>
-    {% elif p == page %}
-    <span class="cur">{{ p }}</span>
-    {% else %}
-    <a href="?page={{ p }}{{ qs_prefix }}">{{ p }}</a>
+      {% for p in page_nums %}
+        {% if p is none %}
+        <span class="gap">…</span>
+        {% elif p == page %}
+        <span class="cur">{{ p }}</span>
+        {% else %}
+        <a href="?page={{ p }}{{ qs_prefix }}">{{ p }}</a>
+        {% endif %}
+      {% endfor %}
+
+      {% if page < total_pages %}
+      <a class="nav" href="?page={{ page+1 }}{{ qs_prefix }}">»</a>
+      <a class="nav" href="?page={{ total_pages }}{{ qs_prefix }}">»»</a>
+      {% else %}
+      <span class="nav-disabled">»</span>
+      <span class="nav-disabled">»»</span>
+      {% endif %}
+    </div>
     {% endif %}
-  {% endfor %}
-
-  {% if page < total_pages %}
-  <a class="nav" href="?page={{ page+1 }}{{ qs_prefix }}">»</a>
-  <a class="nav" href="?page={{ total_pages }}{{ qs_prefix }}">»»</a>
-  {% else %}
-  <span class="nav-disabled">»</span>
-  <span class="nav-disabled">»»</span>
-  {% endif %}
+  </div>
+  <aside class="side-col">
+    <div class="query-box">
+      <div class="query-title">查询任务</div>
+      <div class="query-create">
+        <input id="query-keyword" type="text" placeholder="输入关键词后提交到 fetcher 队列">
+        <button id="query-submit" type="button">创建任务</button>
+      </div>
+      <div class="query-tasks" id="query-tasks">
+        {% for t in query_tasks %}
+        <span class="task-badge task-{{ t.status }}">
+          #{{ t.id }} {{ t.keyword }} ·
+          {% if t.status == "queued" %}排队中{% elif t.status == "running" %}执行中{% elif t.status == "completed" %}已完成{% elif t.status == "failed" %}失败{% else %}排队中{% endif %}
+        </span>
+        {% else %}
+        <span>暂无查询任务</span>
+        {% endfor %}
+      </div>
+    </div>
+  </aside>
 </div>
-{% endif %}
 
 <!-- ── Footer ────────────────────────────────── -->
 <footer>
