@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <defs>
+    <linearGradient id="gt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7EC850"/>
+      <stop offset="100%" stop-color="#5D8B3C"/>
+    </linearGradient>
+    <linearGradient id="gs" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4B7A2E"/>
+      <stop offset="100%" stop-color="#3B6322"/>
+    </linearGradient>
+    <linearGradient id="ds" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8B6B4A"/>
+      <stop offset="100%" stop-color="#6B4F35"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="16" cy="15" r="14" fill="#1a1a1a" stroke="#5D8B3C" stroke-width="1.5"/>
+
+  <!-- Isometric grass block -->
+  <polygon points="16,3 25,10 16,16 7,10" fill="url(#gt)"/>
+  <polygon points="7,10 16,16 16,24 7,18" fill="url(#gs)"/>
+  <polygon points="16,16 25,10 25,18 16,24" fill="url(#ds)"/>
+
+  <!-- Downward arrow on top face (simplified) -->
+  <line x1="16" y1="9" x2="16" y2="14" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"/>
+  <polyline points="13,12 16,15 19,12" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Grass block gradient -->
+    <linearGradient id="grassTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#7EC850"/>
+      <stop offset="100%" stop-color="#5D8B3C"/>
+    </linearGradient>
+    <linearGradient id="grassSide" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4B7A2E"/>
+      <stop offset="100%" stop-color="#3B6322"/>
+    </linearGradient>
+    <linearGradient id="dirtSide" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8B6B4A"/>
+      <stop offset="100%" stop-color="#6B4F35"/>
+    </linearGradient>
+    <!-- Arrow gradient -->
+    <linearGradient id="arrowGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#D0E8C0"/>
+    </linearGradient>
+    <!-- Subtle glow behind the block -->
+    <radialGradient id="glow" cx="0.5" cy="0.45" r="0.5">
+      <stop offset="0%" stop-color="#7EC850" stop-opacity="0.25"/>
+      <stop offset="100%" stop-color="#7EC850" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background glow -->
+  <circle cx="256" cy="230" r="220" fill="url(#glow)"/>
+
+  <!-- ── Isometric grass block (center) ── -->
+  <!-- Top face (grass) -->
+  <polygon points="256,80 400,155 256,230 112,155"
+           fill="url(#grassTop)" stroke="#3B6322" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Left face (grass side, darker) -->
+  <polygon points="112,155 256,230 256,350 112,275"
+           fill="url(#grassSide)" stroke="#3B6322" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Right face (dirt side) -->
+  <polygon points="256,230 400,155 400,275 256,350"
+           fill="url(#dirtSide)" stroke="#6B4F35" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- ── Pixel-art downward arrow on top face (made of small quads) ── -->
+  <!-- Arrow shaft (vertical bar of pixels) -->
+  <rect x="236" y="135" width="40" height="60" rx="3" fill="url(#arrowGrad)" opacity="0.95"/>
+  <!-- Arrow head (downward triangle made of pixel steps) -->
+  <polygon points="216,195 296,195 256,230" fill="url(#arrowGrad)" opacity="0.95" stroke="#3B6322" stroke-width="2" stroke-linejoin="round"/>
+
+  <!-- ── Small pixel "document corners" on top-left of the block ── -->
+  <!-- Top-left folded corner hints at a document/log -->
+  <rect x="156" y="120" width="18" height="18" rx="2" fill="#FFFFFF" opacity="0.6"/>
+  <rect x="156" y="138" width="18" height="3" rx="1" fill="#3B6322" opacity="0.5"/>
+  <rect x="156" y="144" width="18" height="3" rx="1" fill="#3B6322" opacity="0.5"/>
+  <rect x="156" y="150" width="12" height="3" rx="1" fill="#3B6322" opacity="0.5"/>
+
+  <!-- ── Pixel text "MC" below the block ── -->
+  <!-- M -->
+  <rect x="162" y="370" width="10" height="40" rx="2" fill="#5D8B3C"/>
+  <rect x="174" y="378" width="10" height="8" rx="2" fill="#5D8B3C"/>
+  <rect x="186" y="386" width="10" height="8" rx="2" fill="#5D8B3C"/>
+  <rect x="198" y="378" width="10" height="8" rx="2" fill="#5D8B3C"/>
+  <rect x="210" y="370" width="10" height="40" rx="2" fill="#5D8B3C"/>
+
+  <!-- C -->
+  <rect x="240" y="380" width="10" height="26" rx="2" fill="#5D8B3C"/>
+  <rect x="250" y="370" width="28" height="10" rx="2" fill="#5D8B3C"/>
+  <rect x="250" y="396" width="28" height="10" rx="2" fill="#5D8B3C"/>
+  <rect x="268" y="380" width="10" height="16" rx="2" fill="#5D8B3C"/>
+
+  <!-- ── Small decorative data dots (representing log entries streaming in) ── -->
+  <circle cx="140" cy="310" r="5" fill="#7EC850" opacity="0.7"/>
+  <circle cx="120" cy="330" r="4" fill="#7EC850" opacity="0.5"/>
+  <circle cx="155" cy="340" r="4" fill="#7EC850" opacity="0.5"/>
+  <circle cx="340" cy="310" r="5" fill="#7EC850" opacity="0.7"/>
+  <circle cx="370" cy="330" r="4" fill="#7EC850" opacity="0.5"/>
+  <circle cx="355" cy="350" r="4" fill="#7EC850" opacity="0.5"/>
+</svg>
