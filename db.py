@@ -93,12 +93,59 @@ def count_logs(conn: sqlite3.Connection) -> int:
 
 def create_query_task(conn: sqlite3.Connection, keyword: str) -> int:
     """Create a query task and return its id."""
-    with conn:
+    if conn.in_transaction:
         cur = conn.execute(
             "INSERT INTO query_tasks (keyword, status) VALUES (?, 'queued')",
             (keyword,),
         )
+    else:
+        with conn:
+            cur = conn.execute(
+                "INSERT INTO query_tasks (keyword, status) VALUES (?, 'queued')",
+                (keyword,),
+            )
     return int(cur.lastrowid)
+
+
+def ensure_query_task(conn: sqlite3.Connection, keyword: str) -> tuple[int, bool]:
+    """
+    Ensure a query task exists for `keyword`.
+    Returns (task_id, created_new).
+
+    Existing queued/running/completed tasks are reused.
+    Failed tasks are reset back to queued for retry.
+    """
+    row = conn.execute(
+        "SELECT id, status FROM query_tasks WHERE keyword = ? "
+        "ORDER BY CASE status "
+        "WHEN 'queued' THEN 0 "
+        "WHEN 'running' THEN 1 "
+        "WHEN 'completed' THEN 2 "
+        "WHEN 'failed' THEN 3 "
+        "ELSE 4 END ASC, id DESC LIMIT 1",
+        (keyword,),
+    ).fetchone()
+    if row:
+        task_id, status = int(row[0]), str(row[1])
+        if status == "failed":
+            if conn.in_transaction:
+                conn.execute(
+                    "UPDATE query_tasks SET status = 'queued', fetched_count = 0, "
+                    "inserted_count = 0, error = '', started_at = NULL, "
+                    "finished_at = NULL WHERE id = ?",
+                    (task_id,),
+                )
+            else:
+                with conn:
+                    conn.execute(
+                        "UPDATE query_tasks SET status = 'queued', fetched_count = 0, "
+                        "inserted_count = 0, error = '', started_at = NULL, "
+                        "finished_at = NULL WHERE id = ?",
+                        (task_id,),
+                    )
+            return task_id, False
+        return task_id, False
+    return create_query_task(conn, keyword), True
 
 
 def claim_next_query_task(conn: sqlite3.Connection) -> tuple[int, str] | None:
