@@ -116,7 +116,17 @@ LOG = logging.getLogger("server")
 
 
 def _client_ip() -> str:
-    """Best-effort client IP, respecting reverse-proxy headers."""
+    """Best-effort client IP, respecting reverse-proxy headers.
+
+    Priority:
+    1. X-Real-IP      — single IP set by nginx, simplest and hardest to misconfigure.
+    2. X-Forwarded-For — chain; we take the leftmost (original client).
+    3. request.remote_addr — Waitress trusted_proxy rewrites this when the
+       connection comes from a trusted nginx hop.
+    """
+    real_ip = request.headers.get("X-Real-IP", "").strip()
+    if real_ip:
+        return real_ip
     forwarded = request.headers.get("X-Forwarded-For", "").strip()
     if forwarded:
         return forwarded.split(",")[0].strip()
@@ -1416,5 +1426,8 @@ if __name__ == "__main__":
         app.run(host="0.0.0.0", port=5000, debug=True)
     else:
         from waitress import serve
-        LOG.info("Starting Waitress (production mode) on 0.0.0.0:5000")
-        serve(app, host="0.0.0.0", port=5000)
+        trusted_proxy = os.environ.get("TRUSTED_PROXY", "127.0.0.1")
+        LOG.info("Starting Waitress (production mode) on 0.0.0.0:5000, trusted_proxy=%s", trusted_proxy)
+        serve(app, host="0.0.0.0", port=5000,
+              trusted_proxy=trusted_proxy,
+              trusted_proxy_headers="x-forwarded-for x-forwarded-proto")
