@@ -5,16 +5,24 @@ Run separately from main.py:  python server.py
 """
 
 import ipaddress
+import hmac
 import re
+import secrets
 import sqlite3
 import threading
 import time
+from functools import wraps
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
-from flask import Flask, render_template, request, jsonify
+from flask import (
+    Flask, render_template, request, jsonify,
+    session, redirect, url_for, flash,
+)
+from werkzeug.security import generate_password_hash, check_password_hash
+
 from db import (
     SCHEMA,
     claim_next_sync_task,
@@ -25,15 +33,23 @@ from db import (
     insert_logs,
     list_query_tasks,
     list_sync_tasks,
+    create_user, get_user_by_username, get_user_by_id,
+    update_user_role, update_user_password, delete_user,
+    list_users, count_admins,
 )
+from config import FLASK_SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_SHARED_TOKEN
 
 # ── Config ────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "logs.db"
 PER_PAGE = 50
 SYNC_BATCH_SIZE = 200
+AUTH_REFRESH_INTERVAL_SECONDS = 5
 TZ = timezone(timedelta(hours=8))  # 北京时间
 
 app = Flask(__name__)
+app.secret_key = FLASK_SECRET_KEY
+
+VALID_ROLES = ("user", "admin")
 _SYNC_WORKER: threading.Thread | None = None
 _SYNC_WORKER_LOCK = threading.Lock()
 
@@ -56,6 +72,120 @@ def list_query_tasks_safe(db: sqlite3.Connection) -> list[dict]:
         return []
 
 
+def _ensure_default_admin() -> None:
+    """Create the default admin account if no users exist yet."""
+    db = get_db()
+    try:
+        row = db.execute("SELECT COUNT(*) FROM users").fetchone()
+        if row and row[0] == 0:
+            pwd_hash = generate_password_hash(ADMIN_PASSWORD)
+            try:
+                create_user(db, ADMIN_USERNAME, pwd_hash, role="admin")
+            except sqlite3.IntegrityError:
+                return
+            print(f"[auth] Default admin created: username={ADMIN_USERNAME!r}")
+    except sqlite3.OperationalError:
+        pass  # users table may not exist yet (init_db called separately)
+    finally:
+        db.close()
+
+
+_ensure_default_admin()
+
+# ── Auth helpers ───────────────────────────────────────────────
+
+def current_user() -> dict | None:
+    """Return the logged-in user dict from session, or None."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return None
+    db = get_db()
+    try:
+        return get_user_by_id(db, user_id)
+    finally:
+        db.close()
+
+
+@app.before_request
+def _refresh_authenticated_session() -> None:
+    """Keep session role/username in sync with current database state."""
+    if not session.get("user_id"):
+        return
+    now = time.time()
+    last_refresh = float(session.get("_auth_refreshed_at", 0))
+    # API routes may include privileged actions; always refresh role/user state.
+    if (not request.path.startswith("/api/")) and (now - last_refresh) < AUTH_REFRESH_INTERVAL_SECONDS:
+        return
+    user = current_user()
+    if user is None:
+        session.clear()
+        return
+    session["username"] = user["username"]
+    session["role"] = user["role"]
+    session["_auth_refreshed_at"] = now
+
+
+def _csrf_token() -> str:
+    token = session.get("_csrf_token", "")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+@app.context_processor
+def inject_csrf_token() -> dict:
+    return {"csrf_token": _csrf_token()}
+
+
+def _csrf_valid() -> bool:
+    expected = session.get("_csrf_token", "")
+    provided = request.form.get("csrf_token", "")
+    return bool(expected and provided and hmac.compare_digest(expected, provided))
+
+
+
+
+
+def login_required(f):
+    """Redirect to /login if the user is not authenticated.
+
+    For `/api/*` paths, returns a JSON 401 instead of a redirect so that
+    the browser-side polling code can detect the session expiry.
+    The intended destination is stored in the session (not the URL) to
+    prevent open-redirect attacks.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("user_id"):
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "authentication required"}), 401
+            # Store the destination server-side so /login never reads
+            # an attacker-controlled redirect URL from the query string.
+            next_path = request.full_path if request.method in {"GET", "HEAD"} else "/"
+            session["_next"] = next_path[:-1] if next_path.endswith("?") else next_path
+            return redirect(url_for("login"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+def admin_required(f):
+    """Require the 'admin' role; return 403 JSON/redirect otherwise."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("user_id"):
+            if request.is_json or request.path.startswith("/api/"):
+                return jsonify({"error": "authentication required"}), 401
+            next_path = request.full_path if request.method in {"GET", "HEAD"} else "/"
+            session["_next"] = next_path[:-1] if next_path.endswith("?") else next_path
+            return redirect(url_for("login"))
+        if session.get("role") != "admin":
+            if request.is_json or request.path.startswith("/api/"):
+                return jsonify({"error": "admin role required"}), 403
+            return render_template("error.html", code=403,
+                                   message="需要管理员权限"), 403
+        return f(*args, **kwargs)
+    return decorated
 def list_sync_tasks_safe(db: sqlite3.Connection) -> list[dict]:
     """List recent sync tasks, tolerating older DBs without that table."""
     try:
@@ -131,6 +261,9 @@ def _fetch_remote_sync_batch(
     session: requests.Session, remote_url: str, after_time: int, after_id: int
 ) -> list[dict]:
     """Fetch one ascending batch from another Minewatch server."""
+    headers = {}
+    if SYNC_SHARED_TOKEN:
+        headers["X-Sync-Token"] = SYNC_SHARED_TOKEN
     resp = session.get(
         f"{remote_url}/api/logs/export",
         params={
@@ -138,6 +271,7 @@ def _fetch_remote_sync_batch(
             "after_id": after_id,
             "limit": SYNC_BATCH_SIZE,
         },
+        headers=headers,
         timeout=15,
     )
     resp.raise_for_status()
@@ -318,21 +452,47 @@ def _highlight_player(msg: str) -> str:
         return f'<span class="player">{name}</span>' + msg[m.end(1):]
     return msg
 
-# ── Routes ─────────────────────────────────────────────────────
+# ── Auth routes ────────────────────────────────────────────────
 
-def _parse_datetime(s: str) -> int | None:
-    """Parse HTML datetime-local input (YYYY-MM-DDTHH:MM) → epoch ms."""
-    if not s or not s.strip():
-        return None
-    try:
-        dt = datetime.strptime(s.strip(), "%Y-%m-%dT%H:%M")
-        dt = dt.replace(tzinfo=TZ)
-        return int(dt.timestamp() * 1000)
-    except ValueError:
-        return None
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if session.get("user_id"):
+        return redirect(url_for("index"))
+    error = None
+    if request.method == "POST":
+        if not _csrf_valid():
+            return render_template("login.html", error="请求已失效，请刷新页面后重试"), 400
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        db = get_db()
+        try:
+            user = get_user_by_username(db, username)
+        finally:
+            db.close()
+        if user and check_password_hash(user["password_hash"], password):
+            # Read the intended destination stored server-side before clearing session
+            raw_next = session.get("_next", "/")
+            next_url = raw_next if (raw_next.startswith("/") and not raw_next.startswith("//")) else "/"
+            session.clear()
+            session["user_id"] = user["id"]
+            session["username"] = user["username"]
+            session["role"] = user["role"]
+            return redirect(next_url)
+        error = "用户名或密码错误"
+    return render_template("login.html", error=error)
 
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    if not _csrf_valid():
+        return render_template("error.html", code=400, message="请求已失效，请刷新页面后重试"), 400
+    session.clear()
+    return redirect(url_for("login"))
+
+# ── Main view ──────────────────────────────────────────────────
 
 @app.route("/")
+@login_required
 def index():
     page        = request.args.get("page", 1, type=int)
     per_page    = request.args.get("per_page", min(PER_PAGE, 200), type=int)
@@ -408,6 +568,8 @@ def index():
     qs_base = "&".join(qs_parts)
     qs_prefix = f"&{qs_base}" if qs_base else ""
 
+    role = session.get("role", "user")
+
     return render_template(
         "index.html",
         lines=lines,
@@ -428,6 +590,8 @@ def index():
         max_id=max_id,
         now_ts=int(time.time()),
         query_tasks=query_tasks,
+        current_role=role,
+        current_username=session.get("username", ""),
         sync_tasks=sync_tasks,
     )
 
@@ -435,13 +599,21 @@ def index():
 @app.route("/api/query_tasks", methods=["GET", "POST"])
 def api_query_tasks():
     """Create/list fetcher query tasks."""
+    # GET is read-only → login required; POST mutates → user/admin required
+    if not session.get("user_id"):
+        return jsonify({"error": "authentication required"}), 401
+    if request.method == "POST" and session.get("role") not in ("user", "admin"):
+        return jsonify({"error": "permission denied"}), 403
+
     db = get_db()
     try:
         if request.method == "POST":
-            payload = request.get_json(silent=True) or {}
-            keyword = payload.get("keyword") if isinstance(payload, dict) else ""
-            if not keyword:
-                keyword = request.form.get("keyword", "")
+            if not request.is_json:
+                return jsonify({"error": "content type must be application/json"}), 415
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({"error": "invalid json payload"}), 400
+            keyword = payload.get("keyword")
             if not isinstance(keyword, str):
                 return jsonify({"error": "keyword must be a string"}), 400
             keyword = keyword.strip()
@@ -465,13 +637,20 @@ def api_query_tasks():
 @app.route("/api/sync_tasks", methods=["GET", "POST"])
 def api_sync_tasks():
     """Create/list database sync tasks."""
+    if not session.get("user_id"):
+        return jsonify({"error": "authentication required"}), 401
+    if request.method == "POST" and session.get("role") != "admin":
+        return jsonify({"error": "admin role required"}), 403
+
     db = get_db()
     try:
         if request.method == "POST":
-            payload = request.get_json(silent=True) or {}
-            remote_url = payload.get("remote_url") if isinstance(payload, dict) else ""
-            if not remote_url:
-                remote_url = request.form.get("remote_url", "")
+            if not request.is_json:
+                return jsonify({"error": "content type must be application/json"}), 415
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({"error": "invalid json payload"}), 400
+            remote_url = payload.get("remote_url")
             if not isinstance(remote_url, str):
                 return jsonify({"error": "remote_url must be a string"}), 400
             normalized = _normalize_remote_url(remote_url)
@@ -487,6 +666,7 @@ def api_sync_tasks():
 
 
 @app.route("/api/logs")
+@login_required
 def api_logs():
     """JSON endpoint for programmatic access."""
     page = request.args.get("page", 1, type=int)
@@ -516,6 +696,15 @@ def api_logs():
 @app.route("/api/logs/export")
 def api_logs_export():
     """Cursor-based export endpoint for one-way DB sync."""
+    if not session.get("user_id"):
+        token = request.headers.get("X-Sync-Token", "").strip()
+        auth = request.headers.get("Authorization", "").strip()
+        bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        token_ok = bool(token) and hmac.compare_digest(token, SYNC_SHARED_TOKEN)
+        bearer_ok = bool(bearer) and hmac.compare_digest(bearer, SYNC_SHARED_TOKEN)
+        if not SYNC_SHARED_TOKEN or (not token_ok and not bearer_ok):
+            return jsonify({"error": "authentication required"}), 401
+
     after_time = request.args.get("after_time", 0, type=int)
     after_id = request.args.get("after_id", 0, type=int)
     limit = request.args.get("limit", SYNC_BATCH_SIZE, type=int)
@@ -543,6 +732,7 @@ def api_logs_export():
 
 
 @app.route("/api/stats")
+@login_required
 def api_stats():
     """Quick stats endpoint."""
     db = get_db()
@@ -564,6 +754,7 @@ def api_stats():
 
 
 @app.route("/api/poll")
+@login_required
 def api_poll():
     """Incremental poll — returns new lines since (since_time, since_id).
 
@@ -654,6 +845,153 @@ def api_poll():
         "sync_tasks": sync_tasks,
     })
 
+# ── Admin: user management ─────────────────────────────────────
+
+@app.route("/admin/users")
+@admin_required
+def admin_users():
+    db = get_db()
+    try:
+        users = list_users(db)
+    finally:
+        db.close()
+    return render_template(
+        "admin_users.html",
+        users=users,
+        current_username=session.get("username", ""),
+        current_role=session.get("role", ""),
+        valid_roles=VALID_ROLES,
+    )
+
+
+@app.route("/admin/users/create", methods=["POST"])
+@admin_required
+def admin_create_user():
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    role     = request.form.get("role", "user")
+    error    = None
+
+    if not username:
+        error = "用户名不能为空"
+    elif len(username) > 64:
+        error = "用户名过长（最多 64 字符）"
+    elif not password:
+        error = "密码不能为空"
+    elif len(password) < 6:
+        error = "密码过短（至少 6 位）"
+    elif role not in VALID_ROLES:
+        error = "无效角色"
+
+    if error:
+        flash(error, "error")
+        return redirect(url_for("admin_users"))
+
+    db = get_db()
+    try:
+        pwd_hash = generate_password_hash(password)
+        create_user(db, username, pwd_hash, role)
+        flash(f"用户 {username!r} 创建成功", "success")
+    except sqlite3.IntegrityError:
+        flash(f"用户名 {username!r} 已存在", "error")
+    finally:
+        db.close()
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/role", methods=["POST"])
+@admin_required
+def admin_update_role(user_id: int):
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
+    role = request.form.get("role", "")
+    if role not in VALID_ROLES:
+        flash("无效角色", "error")
+        return redirect(url_for("admin_users"))
+
+    db = get_db()
+    try:
+        # Prevent removing the last admin
+        target = get_user_by_id(db, user_id)
+        if target is None:
+            flash("用户不存在", "error")
+            return redirect(url_for("admin_users"))
+        if target["role"] == "admin" and role != "admin":
+            if count_admins(db) <= 1:
+                flash("无法降级：系统中至少需要保留一名管理员", "error")
+                return redirect(url_for("admin_users"))
+        update_user_role(db, user_id, role)
+        flash("角色已更新", "success")
+    finally:
+        db.close()
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/password", methods=["POST"])
+@admin_required
+def admin_update_password(user_id: int):
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
+    password = request.form.get("password", "")
+    if len(password) < 6:
+        flash("密码过短（至少 6 位）", "error")
+        return redirect(url_for("admin_users"))
+    db = get_db()
+    try:
+        target = get_user_by_id(db, user_id)
+        if target is None:
+            flash("用户不存在", "error")
+            return redirect(url_for("admin_users"))
+        update_user_password(db, user_id, generate_password_hash(password))
+        flash("密码已更新", "success")
+    finally:
+        db.close()
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/users/<int:user_id>/delete", methods=["POST"])
+@admin_required
+def admin_delete_user(user_id: int):
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
+    db = get_db()
+    try:
+        target = get_user_by_id(db, user_id)
+        if target is None:
+            flash("用户不存在", "error")
+            return redirect(url_for("admin_users"))
+        if target["role"] == "admin" and count_admins(db) <= 1:
+            flash("无法删除：系统中至少需要保留一名管理员", "error")
+            return redirect(url_for("admin_users"))
+        # Prevent self-deletion
+        if target["id"] == session.get("user_id"):
+            flash("不能删除当前登录账号", "error")
+            return redirect(url_for("admin_users"))
+        delete_user(db, user_id)
+        flash(f"用户 {target['username']!r} 已删除", "success")
+    finally:
+        db.close()
+    return redirect(url_for("admin_users"))
+
+# ── Routes ─────────────────────────────────────────────────────
+
+def _parse_datetime(s: str) -> int | None:
+    """Parse HTML datetime-local input (YYYY-MM-DDTHH:MM) → epoch ms."""
+    if not s or not s.strip():
+        return None
+    try:
+        dt = datetime.strptime(s.strip(), "%Y-%m-%dT%H:%M")
+        dt = dt.replace(tzinfo=TZ)
+        return int(dt.timestamp() * 1000)
+    except ValueError:
+        return None
+
 # ── Pagination helpers ─────────────────────────────────────────
 def _page_window(page: int, total: int, width: int = 7) -> list:
     """Build a list of page numbers with None for ellipsis."""
@@ -677,6 +1015,9 @@ def _page_window(page: int, total: int, width: int = 7) -> list:
 
 # ── Entry point ─────────────────────────────────────────────────
 if __name__ == "__main__":
+    from db import init_db
+    init_db(DB_PATH)
+    _ensure_default_admin()
     print("=" * 52)
     print("  MC Log Viewer")
     print(f"  DB: {DB_PATH}")

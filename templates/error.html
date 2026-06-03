@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>{{ code }} — MC Server Logs</title>
+<style>
+  :root { --bg:#1a1a1a; --text:#d0d0d0; --muted:#6a6a6a; --accent:#3a8a3a; --err:#e04040; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:"Consolas","Courier New","Microsoft YaHei",monospace;
+    display:flex; align-items:center; justify-content:center; min-height:100vh;
+  }
+  .box { text-align:center; }
+  .code { font-size:64px; color:var(--err); font-weight:bold; }
+  .msg  { font-size:16px; color:var(--muted); margin:12px 0 24px; }
+  a { color:var(--accent); text-decoration:none; font-size:13px; }
+  a:hover { text-decoration:underline; }
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="code">{{ code }}</div>
+  <div class="msg">{{ message }}</div>
+  <a href="/">← 返回主页</a>
+</div>
+</body>
+</html>

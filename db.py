@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS query_tasks (
 CREATE INDEX IF NOT EXISTS idx_query_tasks_status_id
 ON query_tasks(status, id);
 
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL UNIQUE,
+    password_hash TEXT    NOT NULL,
+    role          TEXT    NOT NULL DEFAULT 'user',
+    created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS sync_tasks (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     remote_url     TEXT NOT NULL,
@@ -239,6 +246,19 @@ def list_query_tasks(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
     return tasks
 
 
+# ── User management ────────────────────────────────────────────
+
+def create_user(conn: sqlite3.Connection, username: str, password_hash: str,
+                role: str = "user") -> int:
+    """Create a new user and return its id."""
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            (username, password_hash, role),
+        )
+    return int(cur.lastrowid)
+
+
 def create_sync_task(conn: sqlite3.Connection, remote_url: str) -> int:
     """Create a sync task and return its id."""
     with conn:
@@ -247,6 +267,86 @@ def create_sync_task(conn: sqlite3.Connection, remote_url: str) -> int:
             (remote_url,),
         )
     return int(cur.lastrowid)
+
+
+def get_user_by_username(conn: sqlite3.Connection, username: str) -> dict | None:
+    """Return user dict for *username*, or None if not found."""
+    row = conn.execute(
+        "SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?",
+        (username,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row[0]),
+        "username": str(row[1]),
+        "password_hash": str(row[2]),
+        "role": str(row[3]),
+        "created_at": row[4],
+    }
+
+
+def get_user_by_id(conn: sqlite3.Connection, user_id: int) -> dict | None:
+    """Return user dict for *user_id*, or None if not found."""
+    row = conn.execute(
+        "SELECT id, username, password_hash, role, created_at FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row[0]),
+        "username": str(row[1]),
+        "password_hash": str(row[2]),
+        "role": str(row[3]),
+        "created_at": row[4],
+    }
+
+
+def update_user_role(conn: sqlite3.Connection, user_id: int, role: str) -> None:
+    """Update the role of an existing user."""
+    with conn:
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+
+
+def update_user_password(conn: sqlite3.Connection, user_id: int,
+                         password_hash: str) -> None:
+    """Update the password hash of an existing user."""
+    with conn:
+        conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (password_hash, user_id),
+        )
+
+
+def delete_user(conn: sqlite3.Connection, user_id: int) -> None:
+    """Delete a user by id."""
+    with conn:
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+def list_users(conn: sqlite3.Connection) -> list[dict]:
+    """Return all users (without password hashes)."""
+    rows = conn.execute(
+        "SELECT id, username, role, created_at FROM users ORDER BY id ASC"
+    ).fetchall()
+    return [
+        {
+            "id": int(r[0]),
+            "username": str(r[1]),
+            "role": str(r[2]),
+            "created_at": r[3],
+        }
+        for r in rows
+    ]
+
+
+def count_admins(conn: sqlite3.Connection) -> int:
+    """Return the number of admin users."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM users WHERE role = 'admin'"
+    ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def claim_next_sync_task(conn: sqlite3.Connection) -> tuple[int, str] | None:

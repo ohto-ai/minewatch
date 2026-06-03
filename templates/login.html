@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 — MC Server Logs</title>
+<style>
+  :root {
+    --bg:     #1a1a1a;
+    --bg2:    #252525;
+    --text:   #d0d0d0;
+    --muted:  #6a6a6a;
+    --accent: #3a8a3a;
+    --err:    #e04040;
+    --green:  #50d050;
+    --border: #333;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Consolas", "Courier New", "Microsoft YaHei", monospace;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+  .card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--accent);
+    padding: 36px 40px 32px;
+    width: 340px;
+    border-radius: 4px;
+  }
+  .title {
+    font-size: 18px;
+    font-weight: bold;
+    color: var(--green);
+    letter-spacing: 1px;
+    text-shadow: 0 0 8px rgba(80,208,80,0.3);
+    margin-bottom: 24px;
+    text-align: center;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  input[type="text"], input[type="password"] {
+    width: 100%;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 13px;
+    margin-bottom: 14px;
+    outline: none;
+  }
+  input:focus { border-color: var(--accent); }
+  button {
+    width: 100%;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 9px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    letter-spacing: 1px;
+    margin-top: 4px;
+  }
+  button:hover { filter: brightness(1.15); }
+  .error {
+    background: rgba(224,64,64,0.12);
+    border: 1px solid rgba(224,64,64,0.4);
+    color: var(--err);
+    padding: 8px 10px;
+    font-size: 12px;
+    margin-bottom: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="title">▣ MC Server Logs</div>
+  {% if error %}
+  <div class="error">{{ error }}</div>
+  {% endif %}
+  <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="username">用户名</label>
+    <input id="username" type="text" name="username" autofocus autocomplete="username" required>
+    <label for="password">密码</label>
+    <input id="password" type="password" name="password" autocomplete="current-password" required>
+    <button type="submit">登 录</button>
+  </form>
+</div>
+</body>
+</html>
