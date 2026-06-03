@@ -66,6 +66,9 @@ python server.py
 - **查询任务队列** — 在 Web 创建关键词任务，由 fetcher 排队执行并回填日志库
   - 同一调度周期内会按队列顺序逐个执行全部待处理任务
   - 任务间隔可通过 `MC_QUERY_TASK_STEP_INTERVAL` 控制，且不会超过当前调度间隔
+- **单向数据库同步** — 在 Web 中填写另一台 Minewatch 的地址，后台按游标批量拉取远端日志并写入本地库
+  - 使用远端 `(time, id)` 游标顺序导出，不依赖两边数据库的本地自增 ID 一致
+  - 本地仍通过 `UNIQUE(time, log)` 去重，适合两个库内容大量重合的场景
 - **时间范围** — datetime-local 起止筛选
 - **隐藏堆栈** — 仅显示标准日志头行
 - **分页** — 50/100/200 条/页可调
@@ -82,6 +85,18 @@ python server.py
 | `GET /api/poll` | 增量轮询，参数 `since_time` & `since_id` |
 | `GET /api/query_tasks` | 查询任务列表（队列/执行中/完成/失败） |
 | `POST /api/query_tasks` | 创建查询任务，JSON: `{"keyword":"..."}` |
+| `GET /api/sync_tasks` | 数据库同步任务列表（队列/执行中/完成/失败） |
+| `POST /api/sync_tasks` | 创建同步任务，JSON: `{"remote_url":"http://host:5000"}` |
+| `GET /api/logs/export` | 供另一台 Minewatch 增量拉取日志，参数 `after_time` & `after_id` |
+
+## 单向数据库同步方案
+
+1. 在**目标库**对应的 Web 页面右侧“数据库同步”中填写**源库**的 Minewatch 地址，例如 `http://10.0.0.8:5000`
+2. 点击“开始同步”后，服务端会创建后台同步任务
+3. 任务通过源库的 `/api/logs/export` 接口按 `(time, id)` 升序分页拉取数据
+4. 每批数据写入目标库时，依旧走本地 `UNIQUE(time, log)` 去重，因此即使两个库的 `id` 完全不同，也能安全合并重叠内容
+
+该流程是**单向**的：只会把远端库的数据补到当前库，不会反向修改远端服务器。
 
 ## 数据库
 

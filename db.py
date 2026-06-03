@@ -32,6 +32,21 @@ CREATE TABLE IF NOT EXISTS query_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_query_tasks_status_id
 ON query_tasks(status, id);
+
+CREATE TABLE IF NOT EXISTS sync_tasks (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    remote_url     TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'queued',
+    fetched_count  INTEGER NOT NULL DEFAULT 0,
+    inserted_count INTEGER NOT NULL DEFAULT 0,
+    error          TEXT NOT NULL DEFAULT '',
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at     TIMESTAMP,
+    finished_at    TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_tasks_status_id
+ON sync_tasks(status, id);
 '''
 
 INSERT_SQL = '''
@@ -166,6 +181,92 @@ def list_query_tasks(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
         tasks.append({
             "id": int(row[0]),
             "keyword": str(row[1]),
+            "status": str(row[2]),
+            "fetched_count": int(row[3]),
+            "inserted_count": int(row[4]),
+            "error": str(row[5]) if row[5] is not None else "",
+            "created_at": row[6],
+            "started_at": row[7],
+            "finished_at": row[8],
+        })
+    return tasks
+
+
+def create_sync_task(conn: sqlite3.Connection, remote_url: str) -> int:
+    """Create a sync task and return its id."""
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO sync_tasks (remote_url, status) VALUES (?, 'queued')",
+            (remote_url,),
+        )
+    return int(cur.lastrowid)
+
+
+def claim_next_sync_task(conn: sqlite3.Connection) -> tuple[int, str] | None:
+    """Claim the oldest queued sync task and mark it running."""
+    with conn:
+        row = conn.execute(
+            "SELECT id, remote_url FROM sync_tasks WHERE status = 'queued' "
+            "ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None
+
+        task_id, remote_url = int(row[0]), str(row[1])
+        cur = conn.execute(
+            "UPDATE sync_tasks SET status = 'running', "
+            "started_at = CURRENT_TIMESTAMP, error = '' "
+            "WHERE id = ? AND status = 'queued'",
+            (task_id,),
+        )
+        if cur.rowcount != 1:
+            return None
+    return task_id, remote_url
+
+
+def has_queued_sync_task(conn: sqlite3.Connection) -> bool:
+    """Return whether there is another queued sync task waiting."""
+    row = conn.execute(
+        "SELECT 1 FROM sync_tasks WHERE status = 'queued' LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def complete_sync_task(
+    conn: sqlite3.Connection, task_id: int, fetched_count: int, inserted_count: int
+) -> None:
+    """Mark a sync task as completed."""
+    with conn:
+        conn.execute(
+            "UPDATE sync_tasks SET status = 'completed', fetched_count = ?, "
+            "inserted_count = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (fetched_count, inserted_count, task_id),
+        )
+
+
+def fail_sync_task(conn: sqlite3.Connection, task_id: int, error: str) -> None:
+    """Mark a sync task as failed."""
+    with conn:
+        conn.execute(
+            "UPDATE sync_tasks SET status = 'failed', error = ?, "
+            "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (error[:500], task_id),
+        )
+
+
+def list_sync_tasks(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
+    """List recent sync tasks for UI polling."""
+    rows = conn.execute(
+        "SELECT id, remote_url, status, fetched_count, inserted_count, error, "
+        "created_at, started_at, finished_at "
+        "FROM sync_tasks ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    tasks: list[dict] = []
+    for row in rows:
+        tasks.append({
+            "id": int(row[0]),
+            "remote_url": str(row[1]),
             "status": str(row[2]),
             "fetched_count": int(row[3]),
             "inserted_count": int(row[4]),
