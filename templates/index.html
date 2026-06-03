@@ -434,16 +434,13 @@
     {% endif %}
   </div>
   <aside class="side-col">
+    {% if current_role == 'admin' %}
     <div class="query-box">
       <div class="query-title">查询任务</div>
-      {% if current_role in ('user', 'admin') %}
       <div class="query-create">
         <input id="query-keyword" type="text" placeholder="输入关键词后提交到 fetcher 队列">
         <button id="query-submit" type="button">创建任务</button>
       </div>
-      {% else %}
-      <div style="font-size:11px;color:var(--muted);padding:2px 0 4px;">（当前账号无权限发起查询任务）</div>
-      {% endif %}
       <div class="query-tasks" id="query-tasks">
         {% for t in query_tasks %}
         <span class="task-badge task-{{ t.status }}">
@@ -472,6 +469,12 @@
         {% endfor %}
       </div>
     </div>
+    {% else %}
+    <div class="query-box">
+      <div class="query-title">权限说明</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.6;">当前账号仅可查看消息列表。</div>
+    </div>
+    {% endif %}
   </aside>
 </div>
 
@@ -491,7 +494,7 @@
   const queryTasksEl = document.getElementById('query-tasks');
   const queryInputEl = document.getElementById('query-keyword');
   const querySubmitEl = document.getElementById('query-submit');
-  const canCreateTask = {{ 'true' if current_role in ('user', 'admin') else 'false' }};
+  const canCreateTask = {{ 'true' if current_role == 'admin' else 'false' }};
   const syncTasksEl = document.getElementById('sync-tasks');
   const syncInputEl = document.getElementById('sync-remote-url');
   const syncSubmitEl = document.getElementById('sync-submit');
@@ -707,10 +710,10 @@
       }
     });
   }
-  if (syncSubmitEl) {
+  if (canCreateTask && syncSubmitEl) {
     syncSubmitEl.addEventListener('click', createSyncTask);
   }
-  if (syncInputEl) {
+  if (canCreateTask && syncInputEl) {
     syncInputEl.addEventListener('keydown', function(e) {
       if (e.key === 'Enter') {
         e.preventDefault();
