@@ -7,6 +7,7 @@ Run separately from main.py:  python server.py
 import ipaddress
 import hmac
 import logging
+import os
 import re
 import secrets
 import sqlite3
@@ -1281,4 +1282,5 @@ if __name__ == "__main__":
     init_db(DB_PATH)
     setup_logging()
     LOG.info("MC Log Viewer starting — DB: %s", DB_PATH)
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
+    app.run(host="0.0.0.0", port=5000, debug=debug_mode)
