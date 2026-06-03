@@ -5,10 +5,11 @@ Log fetching — poll the API and persist to SQLite.
 import re
 import time as _time
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from config import LOG_URL, LOG_REFERER, QUERY_TASK_STEP_INTERVAL
+from config import LOG_URL, LOG_REFERER, QUERY_TASK_CONCURRENCY, DB_PATH
 from auth import get_auth_headers
 from db import (
     insert_logs, count_logs, get_latest_time, claim_next_query_task,
@@ -100,16 +101,70 @@ def process_one_query_task(conn: sqlite3.Connection, session: requests.Session) 
     return True
 
 
-def process_queued_query_tasks(
-    conn: sqlite3.Connection, session: requests.Session, task_interval: float
-) -> int:
-    """Process queued query tasks one by one with a small delay between tasks."""
+def _query_worker(db_path: str) -> int:
+    """Worker thread: claim and process query tasks until the queue is empty.
+
+    Each worker opens its own DB connection and HTTP session so that
+    multiple workers can run concurrently without contention on a single
+    connection object (SQLite connections are not thread-safe).
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    session = requests.Session()
     processed = 0
-    while process_one_query_task(conn, session):
-        processed += 1
-        if task_interval > 0 and has_queued_query_task(conn):
-            _time.sleep(task_interval)
+    try:
+        while process_one_query_task(conn, session):
+            processed += 1
+    finally:
+        session.close()
+        conn.close()
     return processed
+
+
+def process_queued_query_tasks(db_path: str, max_concurrency: int) -> int:
+    """Process queued query tasks using up to *max_concurrency* parallel workers.
+
+    Each worker independently claims tasks from the database queue via
+    atomic ``UPDATE … WHERE status='queued'``, so tasks are never
+    processed twice.
+
+    When *max_concurrency* is 1 the work is done in the calling thread
+    (no thread-pool overhead).
+    """
+    # Quick exit when the queue is empty — avoids spawning threads uselessly
+    check_conn = sqlite3.connect(db_path)
+    try:
+        if not has_queued_query_task(check_conn):
+            return 0
+    finally:
+        check_conn.close()
+
+    # Single-worker path: no thread overhead, preserves task_interval delay
+    if max_concurrency <= 1:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        session = requests.Session()
+        try:
+            processed = 0
+            while process_one_query_task(conn, session):
+                processed += 1
+            return processed
+        finally:
+            session.close()
+            conn.close()
+
+    # Multi-worker path: launch N threads, each draining the queue
+    with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+        futures = [
+            executor.submit(_query_worker, db_path)
+            for _ in range(max_concurrency)
+        ]
+        total = 0
+        for f in as_completed(futures):
+            total += f.result()
+        return total
 
 
 def poll_loop(conn: sqlite3.Connection) -> None:
@@ -121,6 +176,7 @@ def poll_loop(conn: sqlite3.Connection) -> None:
 
     print(f"[init] DB contains {total_stored} existing entries")
     print(f"[init] 调度: {describe()}")
+    print(f"[init] 查询并发数: {QUERY_TASK_CONCURRENCY}")
     print(f"[init] Ctrl+C to stop\n")
 
     consecutive_errors = 0
@@ -150,8 +206,9 @@ def poll_loop(conn: sqlite3.Connection) -> None:
                 if interval != prev_interval:
                     print(f"[sch] 时段切换 → {describe()}")
                     prev_interval = interval
-                task_interval = min(max(QUERY_TASK_STEP_INTERVAL, 0.0), float(interval))
-                process_queued_query_tasks(conn, session, task_interval)
+                _process_queued = process_queued_query_tasks(DB_PATH, QUERY_TASK_CONCURRENCY)
+                if _process_queued:
+                    print(f"[task] batch done — {_process_queued} tasks processed")
 
                 # Sleep precisely, accounting for request latency
                 elapsed = _time.monotonic() - loop_start

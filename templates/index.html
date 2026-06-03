@@ -306,6 +306,58 @@
   .task-completed { color: var(--green); }
   .task-failed { color: var(--err); }
 
+  /* ── Progress bar ──────────────────────────── */
+  .task-progress-wrap {
+    margin: 4px 0;
+  }
+  .task-progress-bar {
+    height: 8px;
+    border-radius: 4px;
+    background: #333;
+    overflow: hidden;
+    display: flex;
+    gap: 1px;
+  }
+  .task-progress-bar .seg-completed { background: var(--green); }
+  .task-progress-bar .seg-failed    { background: var(--err); }
+  .task-progress-bar .seg-running   { background: var(--gold); }
+  .task-progress-bar .seg-queued    { background: #444; }
+  .task-progress-text {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 3px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .task-stats-row {
+    font-size: 11px;
+    color: var(--muted);
+    margin: 2px 0 6px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .task-stats-row .stat-running   { color: var(--gold); }
+  .task-stats-row .stat-completed { color: var(--green); }
+  .task-stats-row .stat-failed    { color: var(--err); }
+
+  .task-toggle-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .task-toggle-btn {
+    font-size: 10px;
+    background: var(--bg);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    cursor: pointer;
+    border-radius: 3px;
+  }
+  .task-toggle-btn:hover { color: var(--text); border-color: var(--accent); }
+  .task-toggle-btn.active { color: var(--green); border-color: var(--accent); }
+
   @media (max-width: 1180px) {
     .page-shell {
       flex-direction: column;
@@ -436,7 +488,44 @@
   <aside class="side-col">
     {% if current_role == 'admin' %}
     <div class="query-box">
-      <div class="query-title">查询任务</div>
+      <div class="task-toggle-row">
+        <span class="query-title">查询任务</span>
+        <button class="task-toggle-btn" id="toggle-task-view" type="button">显示全部</button>
+      </div>
+      <!-- Progress bar -->
+      {% set stats = query_task_stats or {} %}
+      {% set st_total = stats.get('total', 0) or 0 %}
+      {% set st_completed = stats.get('completed', 0) or 0 %}
+      {% set st_failed = stats.get('failed', 0) or 0 %}
+      {% set st_running = stats.get('running', 0) or 0 %}
+      {% set st_queued = stats.get('queued', 0) or 0 %}
+      {% set st_done = st_completed + st_failed %}
+      <div class="task-progress-wrap" id="task-progress-wrap"
+           {% if st_total == 0 %}style="display:none"{% endif %}>
+        <div class="task-progress-bar" id="task-progress-bar">
+          {% if st_total > 0 %}
+          {% set pct_c = (st_completed / st_total * 100)|round(1) %}
+          {% set pct_f = (st_failed / st_total * 100)|round(1) %}
+          {% set pct_r = (st_running / st_total * 100)|round(1) %}
+          {% set pct_q = (st_queued / st_total * 100)|round(1) %}
+          {% if pct_c > 0 %}<div class="seg-completed" style="flex:{{ pct_c }}"></div>{% endif %}
+          {% if pct_f > 0 %}<div class="seg-failed" style="flex:{{ pct_f }}"></div>{% endif %}
+          {% if pct_r > 0 %}<div class="seg-running" style="flex:{{ pct_r }}"></div>{% endif %}
+          {% if pct_q > 0 %}<div class="seg-queued" style="flex:{{ pct_q }}"></div>{% endif %}
+          {% endif %}
+        </div>
+        <div class="task-progress-text">
+          <span>{{ st_done }}/{{ st_total }} ({% if st_total > 0 %}{{ (st_done / st_total * 100)|round(1) }}{% else %}0{% endif %}%)</span>
+          <span id="task-progress-label"></span>
+        </div>
+      </div>
+      <div class="task-stats-row" id="task-stats-row">
+        {% if st_running > 0 %}<span class="stat-running">{{ st_running }} 运行中</span>{% endif %}
+        {% if st_queued > 0 %}<span>{{ st_queued }} 排队</span>{% endif %}
+        {% if st_completed > 0 %}<span class="stat-completed">{{ st_completed }} 已完成</span>{% endif %}
+        {% if st_failed > 0 %}<span class="stat-failed">{{ st_failed }} 失败</span>{% endif %}
+        {% if st_total == 0 %}<span>暂无任务</span>{% endif %}
+      </div>
       <div class="query-create">
         <input id="query-keyword" type="text" placeholder="输入关键词后提交到 fetcher 队列">
         <button id="query-submit" type="button">创建任务</button>
@@ -445,10 +534,10 @@
         {% for t in query_tasks %}
         <span class="task-badge task-{{ t.status }}">
           #{{ t.id }} {{ t.keyword }} ·
-          {% if t.status == "queued" %}排队中{% elif t.status == "running" %}执行中{% elif t.status == "completed" %}已完成{% elif t.status == "failed" %}失败{% else %}排队中{% endif %}
+          {% if t.status == "queued" %}排队中{% elif t.status == "running" %}执行中{% elif t.status == "completed" %}已完成 · {{ t.inserted_count }}/{{ t.fetched_count }}{% elif t.status == "failed" %}失败{% if t.error %} · {{ t.error }}{% endif %}{% else %}排队中{% endif %}
         </span>
         {% else %}
-        <span>暂无查询任务</span>
+        <span>暂无活跃查询任务</span>
         {% endfor %}
       </div>
     </div>
@@ -500,6 +589,7 @@
   let pollTimer = null;
   let failCount = 0;
   let shouldPoll = true;
+  let showAllTasks = false;  // false = active only, true = show all
 
   function buildPollUrl() {
     const params = new URLSearchParams(window.location.search);
@@ -540,7 +630,7 @@
         statusEl.textContent = '实时监听中 (15s) — +' + data.count + ' 条新消息';
         setTimeout(function() { statusEl.textContent = '实时监听中 (15s)'; }, 3000);
       }
-      renderQueryTasks(data.query_tasks || []);
+      renderQueryTasks(data.query_tasks || [], data.query_task_stats || {});
       renderSyncTasks(data.sync_tasks || []);
 
       // Trim old lines to keep DOM at most 500
@@ -562,7 +652,7 @@
     }
   }
 
-  function renderQueryTasks(tasks) {
+  function renderQueryTasks(tasks, stats) {
     const statusMap = {
       queued: '排队中',
       running: '执行中',
@@ -570,13 +660,58 @@
       failed: '失败',
     };
     if (!queryTasksEl) return;
+
+    // ── Update progress bar & stats row ──
+    const progressWrap = document.getElementById('task-progress-wrap');
+    const progressBar = document.getElementById('task-progress-bar');
+    const progressLabel = document.getElementById('task-progress-label');
+    const statsRow = document.getElementById('task-stats-row');
+
+    if (stats && stats.total > 0) {
+      if (progressWrap) progressWrap.style.display = '';
+      const total = stats.total;
+      const completed = stats.completed || 0;
+      const failed = stats.failed || 0;
+      const running = stats.running || 0;
+      const queued = stats.queued || 0;
+      const done = completed + failed;
+
+      // Progress bar segments
+      if (progressBar) {
+        let html = '';
+        const pct = function(n) { return (n / total * 100).toFixed(1); };
+        if (completed > 0) html += '<div class="seg-completed" style="flex:' + pct(completed) + '"></div>';
+        if (failed > 0)    html += '<div class="seg-failed" style="flex:' + pct(failed) + '"></div>';
+        if (running > 0)   html += '<div class="seg-running" style="flex:' + pct(running) + '"></div>';
+        if (queued > 0)    html += '<div class="seg-queued" style="flex:' + pct(queued) + '"></div>';
+        progressBar.innerHTML = html;
+      }
+      if (progressLabel) {
+        progressLabel.textContent = done + '/' + total + ' (' + (total > 0 ? (done / total * 100).toFixed(1) : 0) + '%)';
+      }
+
+      // Stats row
+      if (statsRow) {
+        let parts = [];
+        if (running > 0)   parts.push('<span class="stat-running">' + running + ' 运行中</span>');
+        if (queued > 0)    parts.push('<span>' + queued + ' 排队</span>');
+        if (completed > 0) parts.push('<span class="stat-completed">' + completed + ' 已完成</span>');
+        if (failed > 0)    parts.push('<span class="stat-failed">' + failed + ' 失败</span>');
+        statsRow.innerHTML = parts.length > 0 ? parts.join(' &middot; ') : '<span>暂无任务</span>';
+      }
+    } else {
+      if (progressWrap) progressWrap.style.display = 'none';
+      if (statsRow) statsRow.innerHTML = '<span>暂无任务</span>';
+    }
+
+    // ── Render task badges ──
     if (!tasks || tasks.length === 0) {
-      queryTasksEl.innerHTML = '<span>暂无查询任务</span>';
+      queryTasksEl.innerHTML = '<span>' + (showAllTasks ? '暂无查询任务' : '暂无活跃查询任务') + '</span>';
       return;
     }
     queryTasksEl.innerHTML = tasks.map(function(task) {
-      let status = statusMap[task.status] ? task.status : 'queued';
-      let text = '#' + task.id + ' ' + escapeHtml(task.keyword || '') + ' · ' + statusMap[status];
+      let status = task.status;
+      let text = '#' + task.id + ' ' + escapeHtml(task.keyword || '') + ' · ' + (statusMap[status] || status);
       if (status === 'completed') {
         text += ' (' + task.inserted_count + '/' + task.fetched_count + ')';
       }
@@ -645,10 +780,11 @@
       }
       statusEl.textContent = '查询任务已创建 #' + data.task_id;
       if (queryInputEl) queryInputEl.value = '';
-      const listResp = await fetch('/api/query_tasks');
+      const statusParam = showAllTasks ? '' : '?status=active';
+      const listResp = await fetch('/api/query_tasks' + statusParam);
       if (listResp.ok) {
         const listData = await listResp.json();
-        renderQueryTasks(listData.tasks || []);
+        renderQueryTasks(listData.tasks || [], listData.stats || {});
       }
     } catch (e) {
       statusEl.textContent = '创建任务失败: ' + e.message;
@@ -713,6 +849,31 @@
       if (e.key === 'Enter') {
         e.preventDefault();
         createSyncTask();
+      }
+    });
+  }
+
+  // Toggle between active-only and all-tasks view
+  const toggleBtn = document.getElementById('toggle-task-view');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', async function() {
+      showAllTasks = !showAllTasks;
+      if (showAllTasks) {
+        toggleBtn.textContent = '只看活跃';
+        toggleBtn.classList.add('active');
+      } else {
+        toggleBtn.textContent = '显示全部';
+        toggleBtn.classList.remove('active');
+      }
+      const statusParam = showAllTasks ? '' : '?status=active';
+      try {
+        const resp = await fetch('/api/query_tasks' + statusParam);
+        if (resp.ok) {
+          const data = await resp.json();
+          renderQueryTasks(data.tasks || [], data.stats || {});
+        }
+      } catch (e) {
+        console.warn('Toggle task view error:', e);
       }
     });
   }

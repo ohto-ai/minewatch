@@ -35,6 +35,7 @@ from db import (
     insert_logs,
     list_query_tasks,
     list_sync_tasks,
+    get_query_task_stats,
     create_user, get_user_by_username, get_user_by_id,
     update_user_role, update_user_password, delete_user,
     list_users, count_admins,
@@ -113,14 +114,25 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
-def list_query_tasks_safe(db: sqlite3.Connection) -> list[dict]:
+def list_query_tasks_safe(db: sqlite3.Connection, limit: int = 20,
+                         status: str | None = None) -> list[dict]:
     """List recent query tasks, tolerating older DBs without that table."""
     try:
-        return list_query_tasks(db)
+        return list_query_tasks(db, limit=limit, status=status)
     except sqlite3.OperationalError as exc:
         if "no such table: query_tasks" not in str(exc):
             raise
         return []
+
+
+def get_query_task_stats_safe(db: sqlite3.Connection) -> dict[str, int]:
+    """Return query task stats, tolerating older DBs without that table."""
+    try:
+        return get_query_task_stats(db)
+    except sqlite3.OperationalError as exc:
+        if "no such table: query_tasks" not in str(exc):
+            raise
+        return {"total": 0, "queued": 0, "running": 0, "completed": 0, "failed": 0}
 
 
 # ── Auth helpers ───────────────────────────────────────────────
@@ -731,7 +743,12 @@ def index():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
-        query_tasks = list_query_tasks_safe(db) if role == "admin" else []
+        if role == "admin":
+            query_tasks = list_query_tasks_safe(db, limit=200, status="active")
+            query_task_stats = get_query_task_stats_safe(db)
+        else:
+            query_tasks = []
+            query_task_stats = {}
         sync_tasks = list_sync_tasks_safe(db) if role == "admin" else []
     finally:
         db.close()
@@ -769,6 +786,7 @@ def index():
         max_id=max_id,
         now_ts=int(time.time()),
         query_tasks=query_tasks,
+        query_task_stats=query_task_stats,
         current_role=role,
         current_username=session.get("username", ""),
         sync_tasks=sync_tasks,
@@ -807,7 +825,11 @@ def api_query_tasks():
                 return jsonify({"error": "query task storage is not initialized yet"}), 503
             return jsonify({"ok": True, "task_id": task_id})
 
-        return jsonify({"tasks": list_query_tasks_safe(db)})
+        status_filter = request.args.get("status", "").strip() or None
+        return jsonify({
+            "tasks": list_query_tasks_safe(db, limit=200, status=status_filter),
+            "stats": get_query_task_stats_safe(db),
+        })
     finally:
         db.close()
 
@@ -1008,8 +1030,14 @@ def api_poll():
             if latest else "无数据"
         )
         role = session.get("role", "user")
-        query_tasks = list_query_tasks_safe(db) if role == "admin" else []
-        sync_tasks = list_sync_tasks_safe(db) if role == "admin" else []
+        if role == "admin":
+            query_tasks = list_query_tasks_safe(db, limit=200, status="active")
+            query_task_stats = get_query_task_stats_safe(db)
+            sync_tasks = list_sync_tasks_safe(db)
+        else:
+            query_tasks = []
+            query_task_stats = {}
+            sync_tasks = []
     finally:
         db.close()
 
@@ -1021,6 +1049,7 @@ def api_poll():
         "last_update": last_update,
         "total": total,
         "query_tasks": query_tasks,
+        "query_task_stats": query_task_stats,
         "sync_tasks": sync_tasks,
     })
 

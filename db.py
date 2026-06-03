@@ -233,14 +233,31 @@ def fail_query_task(conn: sqlite3.Connection, task_id: int, error: str) -> None:
         )
 
 
-def list_query_tasks(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
-    """List recent query tasks for UI polling."""
-    rows = conn.execute(
-        "SELECT id, keyword, status, fetched_count, inserted_count, error, "
-        "created_at, started_at, finished_at "
-        "FROM query_tasks ORDER BY id DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
+def list_query_tasks(conn: sqlite3.Connection, limit: int = 20,
+                     status: str | None = None) -> list[dict]:
+    """List recent query tasks for UI polling.
+
+    When *status* is 'active', only queued + running tasks are returned,
+    ordered by status (running first) then id.
+    When *status* is None (default), recent tasks of any status are returned
+    ordered by newest id first.
+    """
+    if status == "active":
+        rows = conn.execute(
+            "SELECT id, keyword, status, fetched_count, inserted_count, error, "
+            "created_at, started_at, finished_at "
+            "FROM query_tasks WHERE status IN ('queued', 'running') "
+            "ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, id ASC "
+            "LIMIT ?",
+            (limit,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, keyword, status, fetched_count, inserted_count, error, "
+            "created_at, started_at, finished_at "
+            "FROM query_tasks ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
     tasks: list[dict] = []
     for row in rows:
         tasks.append({
@@ -255,6 +272,20 @@ def list_query_tasks(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
             "finished_at": row[8],
         })
     return tasks
+
+
+def get_query_task_stats(conn: sqlite3.Connection) -> dict[str, int]:
+    """Return counts of query tasks grouped by status."""
+    rows = conn.execute(
+        "SELECT status, COUNT(*) FROM query_tasks GROUP BY status"
+    ).fetchall()
+    stats = {"total": 0, "queued": 0, "running": 0, "completed": 0, "failed": 0}
+    for status, cnt in rows:
+        key = str(status) if str(status) in stats else None
+        if key:
+            stats[key] = int(cnt)
+        stats["total"] += int(cnt)
+    return stats
 
 
 # ── User management ────────────────────────────────────────────
