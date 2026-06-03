@@ -702,7 +702,7 @@ def api_logs_export():
         bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         token_ok = bool(token) and hmac.compare_digest(token, SYNC_SHARED_TOKEN)
         bearer_ok = bool(bearer) and hmac.compare_digest(bearer, SYNC_SHARED_TOKEN)
-        if not SYNC_SHARED_TOKEN or (not token_ok and not bearer_ok):
+        if SYNC_SHARED_TOKEN and not token_ok and not bearer_ok:
             return jsonify({"error": "authentication required"}), 401
 
     after_time = request.args.get("after_time", 0, type=int)
