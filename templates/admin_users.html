@@ -189,6 +189,7 @@
   <div class="create-form">
     <form method="post" action="/admin/users/create">
       <div class="fields">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <span class="flabel">用户名</span>
         <input type="text" name="username" placeholder="username" required maxlength="64" style="width:140px;">
         <span class="flabel">密码</span>
@@ -229,6 +230,7 @@
           <div class="row-actions">
             <!-- Change role -->
             <form method="post" action="/admin/users/{{ u.id }}/role">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <select name="role">
                 {% for r in valid_roles %}
                 <option value="{{ r }}" {% if r == u.role %}selected{% endif %}>{{ r }}</option>
@@ -238,6 +240,7 @@
             </form>
             <!-- Change password -->
             <form method="post" action="/admin/users/{{ u.id }}/password">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <input type="password" name="password" placeholder="新密码(≥6位)" minlength="6" required style="width:120px;">
               <button type="submit" class="btn">修改密码</button>
             </form>
@@ -245,6 +248,7 @@
             {% if u.username != current_username %}
             <form method="post" action="/admin/users/{{ u.id }}/delete"
                   onsubmit='return confirm("确认删除用户 " + {{ u.username|tojson }} + "？");'>
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button type="submit" class="btn btn-danger">删除</button>
             </form>
             {% endif %}

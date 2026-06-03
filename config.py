@@ -6,6 +6,7 @@ Copy .env.example → .env and set your real credentials there.
 """
 
 import os
+import secrets as _secrets
 from pathlib import Path
 
 
@@ -70,7 +71,6 @@ TOKEN_EXPIRY_BUFFER = 60
 # Flask secret key for session signing — set via FLASK_SECRET_KEY env var.
 # A random key is generated at startup when the env var is absent, which means
 # sessions are invalidated on every server restart in that case.
-import secrets as _secrets
 FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY") or _secrets.token_hex(32)
 
 # Default admin credentials (used only when no users exist in the database).

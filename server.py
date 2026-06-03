@@ -5,7 +5,9 @@ Run separately from main.py:  python server.py
 """
 
 import ipaddress
+import hmac
 import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -83,6 +85,9 @@ def _ensure_default_admin() -> None:
     finally:
         db.close()
 
+
+_ensure_default_admin()
+
 # ── Auth helpers ───────────────────────────────────────────────
 
 def current_user() -> dict | None:
@@ -95,6 +100,38 @@ def current_user() -> dict | None:
         return get_user_by_id(db, user_id)
     finally:
         db.close()
+
+
+@app.before_request
+def _refresh_authenticated_session() -> None:
+    """Keep session role/username in sync with current database state."""
+    if not session.get("user_id"):
+        return
+    user = current_user()
+    if user is None:
+        session.clear()
+        return
+    session["username"] = user["username"]
+    session["role"] = user["role"]
+
+
+def _csrf_token() -> str:
+    token = session.get("_csrf_token", "")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["_csrf_token"] = token
+    return token
+
+
+@app.context_processor
+def inject_csrf_token() -> dict:
+    return {"csrf_token": _csrf_token()}
+
+
+def _csrf_valid() -> bool:
+    expected = session.get("_csrf_token", "")
+    provided = request.form.get("csrf_token", "")
+    return bool(expected and provided and hmac.compare_digest(expected, provided))
 
 
 
@@ -117,19 +154,6 @@ def login_required(f):
             # an attacker-controlled redirect URL from the query string.
             session["_next"] = request.path
             return redirect(url_for("login"))
-        return f(*args, **kwargs)
-    return decorated
-
-
-def user_required(f):
-    """Require at least the 'user' role (or 'admin')."""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not session.get("user_id"):
-            return jsonify({"error": "authentication required"}), 401
-        role = session.get("role", "")
-        if role not in ("user", "admin"):
-            return jsonify({"error": "permission denied"}), 403
         return f(*args, **kwargs)
     return decorated
 
@@ -821,6 +845,9 @@ def admin_users():
 @app.route("/admin/users/create", methods=["POST"])
 @admin_required
 def admin_create_user():
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
     role     = request.form.get("role", "user")
@@ -856,6 +883,9 @@ def admin_create_user():
 @app.route("/admin/users/<int:user_id>/role", methods=["POST"])
 @admin_required
 def admin_update_role(user_id: int):
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
     role = request.form.get("role", "")
     if role not in VALID_ROLES:
         flash("无效角色", "error")
@@ -882,6 +912,9 @@ def admin_update_role(user_id: int):
 @app.route("/admin/users/<int:user_id>/password", methods=["POST"])
 @admin_required
 def admin_update_password(user_id: int):
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
     password = request.form.get("password", "")
     if len(password) < 6:
         flash("密码过短（至少 6 位）", "error")
@@ -902,6 +935,9 @@ def admin_update_password(user_id: int):
 @app.route("/admin/users/<int:user_id>/delete", methods=["POST"])
 @admin_required
 def admin_delete_user(user_id: int):
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
     db = get_db()
     try:
         target = get_user_by_id(db, user_id)
