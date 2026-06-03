@@ -6,12 +6,14 @@ Run separately from main.py:  python server.py
 
 import ipaddress
 import hmac
+import logging
 import re
 import secrets
 import sqlite3
 import threading
 import time
 from functools import wraps
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlsplit, urlunsplit
@@ -52,6 +54,54 @@ app.secret_key = FLASK_SECRET_KEY
 VALID_ROLES = ("user", "admin", "xcon")
 _SYNC_WORKER: threading.Thread | None = None
 _SYNC_WORKER_LOCK = threading.Lock()
+
+# ── Logging ─────────────────────────────────────────────────────
+
+LOG_DIR = Path(__file__).parent / "logs"
+
+
+def setup_logging() -> None:
+    """Configure date-rotating file + console logging."""
+    LOG_DIR.mkdir(exist_ok=True)
+    log = logging.getLogger("server")
+    log.setLevel(logging.INFO)
+
+    if log.handlers:
+        return  # already configured (e.g., module reload in debug mode)
+
+    fmt = logging.Formatter(
+        "%(asctime)s [%(levelname)-7s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    # File handler — rotate at midnight, keep 30 days
+    fh = TimedRotatingFileHandler(
+        str(LOG_DIR / "server.log"),
+        when="midnight",
+        interval=1,
+        backupCount=30,
+        encoding="utf-8",
+    )
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(fmt)
+    log.addHandler(fh)
+
+    # Console handler — visible when running `python server.py`
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(fmt)
+    log.addHandler(ch)
+
+
+LOG = logging.getLogger("server")
+
+
+def _client_ip() -> str:
+    """Best-effort client IP, respecting reverse-proxy headers."""
+    forwarded = request.headers.get("X-Forwarded-For", "").strip()
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "0.0.0.0"
 
 # ── DB helpers ─────────────────────────────────────────────────
 def get_db() -> sqlite3.Connection:
@@ -318,13 +368,18 @@ def _process_one_sync_task() -> bool:
                 break
 
         complete_sync_task(db, task_id, fetched_count, inserted_count)
+        LOG.info("Sync task #%d completed: %d fetched, %d inserted from %s",
+                 task_id, fetched_count, inserted_count, remote_url)
         return True
     except Exception as exc:
         if "task_id" in locals():
             fail_sync_task(db, task_id, str(exc))
+            LOG.error("Sync task #%d failed from %s: %s",
+                      task_id, remote_url, exc)
         else:
             # Exception before any task was claimed – sleep briefly to avoid
             # a tight busy-loop on persistent errors (e.g., DB locked).
+            LOG.error("Sync worker error before claiming task: %s", exc)
             time.sleep(1)
         return True
     finally:
@@ -488,6 +543,7 @@ def login():
     error = None
     if request.method == "POST":
         if not _csrf_valid():
+            LOG.warning("CSRF validation failed at /login from %s", _client_ip())
             return render_template("login.html", error="请求已失效，请刷新页面后重试"), 400
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
@@ -499,22 +555,30 @@ def login():
                 if user["role"] == "xcon":
                     # xcon users always authenticate against the external API
                     if not xcon_authenticate(username, password):
+                        LOG.warning("Login failed for xcon user %r from %s",
+                                    username, _client_ip())
                         error = "XCon 认证失败，请检查用户名和密码"
                         return render_template("login.html", error=error)
                 else:
                     # Normal users — check local password hash
                     if not check_password_hash(user["password_hash"], password):
+                        LOG.warning("Login failed for user %r from %s: bad password",
+                                    username, _client_ip())
                         error = "用户名或密码错误"
                         return render_template("login.html", error=error)
             else:
                 # ── User not found locally — try xcon auto-registration ──
                 if not xcon_authenticate(username, password):
+                    LOG.warning("Login failed for unknown user %r from %s",
+                                username, _client_ip())
                     error = "用户名或密码错误"
                     return render_template("login.html", error=error)
                 # xcon auth succeeded — auto-create a local xcon user
                 try:
                     create_user(db, username, "",
                                 role="xcon", password_plain=password)
+                    LOG.info("XCon user %r auto-registered from %s",
+                             username, _client_ip())
                 except sqlite3.IntegrityError:
                     # Race: another request created the user between our
                     # lookup and insert. Re-fetch to get the new row.
@@ -532,6 +596,8 @@ def login():
             session["user_id"] = user["id"]
             session["username"] = user["username"]
             session["role"] = user["role"]
+            LOG.info("Login succeeded for user %r (role=%s) from %s",
+                     username, user["role"], _client_ip())
             return redirect(next_url)
         finally:
             db.close()
@@ -550,6 +616,7 @@ def setup():
 
     if request.method == "POST":
         if not _csrf_valid():
+            LOG.warning("CSRF validation failed at /setup from %s", _client_ip())
             return render_template("setup.html", error="请求已失效，请刷新页面后重试"), 400
 
         username = request.form.get("username", "").strip()
@@ -577,6 +644,8 @@ def setup():
                 pwd_hash = generate_password_hash(password)
                 create_user(db, username, pwd_hash, role="admin",
                             password_plain=password)
+                LOG.info("First admin account %r created via setup wizard from %s",
+                         username, _client_ip())
                 return redirect(url_for("login"))
             except sqlite3.IntegrityError:
                 # Race: another request created the first user between our
@@ -593,8 +662,11 @@ def setup():
 @app.route("/logout", methods=["POST"])
 def logout():
     if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /logout from %s", _client_ip())
         return render_template("error.html", code=400, message="请求已失效，请刷新页面后重试"), 400
+    username = session.get("username", "?")
     session.clear()
+    LOG.info("User %r logged out from %s", username, _client_ip())
     return redirect(url_for("login"))
 
 # ── Main view ──────────────────────────────────────────────────
@@ -975,6 +1047,8 @@ def admin_users():
 @admin_required
 def admin_create_user():
     if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /admin/users/create from %s",
+                    _client_ip())
         flash("请求已失效，请刷新页面后重试", "error")
         return redirect(url_for("admin_users"))
     username = request.form.get("username", "").strip()
@@ -1007,6 +1081,8 @@ def admin_create_user():
             pwd_hash = generate_password_hash(password)
             pwd_plain = ""
         create_user(db, username, pwd_hash, role, password_plain=pwd_plain)
+        LOG.warning("Admin %r created user %r (role=%s) from %s",
+                    session.get("username"), username, role, _client_ip())
         flash(f"用户 {username!r} 创建成功", "success")
     except sqlite3.IntegrityError:
         flash(f"用户名 {username!r} 已存在", "error")
@@ -1019,6 +1095,8 @@ def admin_create_user():
 @admin_required
 def admin_update_role(user_id: int):
     if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /admin/users/role from %s",
+                    _client_ip())
         flash("请求已失效，请刷新页面后重试", "error")
         return redirect(url_for("admin_users"))
     role = request.form.get("role", "")
@@ -1037,7 +1115,11 @@ def admin_update_role(user_id: int):
             if count_admins(db) <= 1:
                 flash("无法降级：系统中至少需要保留一名管理员", "error")
                 return redirect(url_for("admin_users"))
+        old_role = target["role"]
         update_user_role(db, user_id, role)
+        LOG.warning("Admin %r changed user %r role from %s to %s from %s",
+                    session.get("username"), target["username"],
+                    old_role, role, _client_ip())
         flash("角色已更新", "success")
     finally:
         db.close()
@@ -1048,6 +1130,8 @@ def admin_update_role(user_id: int):
 @admin_required
 def admin_update_password(user_id: int):
     if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /admin/users/password from %s",
+                    _client_ip())
         flash("请求已失效，请刷新页面后重试", "error")
         return redirect(url_for("admin_users"))
     password = request.form.get("password", "")
@@ -1066,6 +1150,8 @@ def admin_update_password(user_id: int):
             flash("XCon 用户的密码由外部系统管理，无法在此修改", "error")
             return redirect(url_for("admin_users"))
         update_user_password(db, user_id, generate_password_hash(password))
+        LOG.warning("Admin %r changed password for user %r from %s",
+                    session.get("username"), target["username"], _client_ip())
         flash("密码已更新", "success")
     finally:
         db.close()
@@ -1076,6 +1162,8 @@ def admin_update_password(user_id: int):
 @admin_required
 def admin_delete_user(user_id: int):
     if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /admin/users/delete from %s",
+                    _client_ip())
         flash("请求已失效，请刷新页面后重试", "error")
         return redirect(url_for("admin_users"))
     db = get_db()
@@ -1092,6 +1180,9 @@ def admin_delete_user(user_id: int):
             flash("不能删除当前登录账号", "error")
             return redirect(url_for("admin_users"))
         delete_user(db, user_id)
+        LOG.warning("Admin %r deleted user %r (role=%s) from %s",
+                    session.get("username"), target["username"],
+                    target["role"], _client_ip())
         flash(f"用户 {target['username']!r} 已删除", "success")
     finally:
         db.close()
@@ -1135,8 +1226,6 @@ def _page_window(page: int, total: int, width: int = 7) -> list:
 if __name__ == "__main__":
     from db import init_db
     init_db(DB_PATH)
-    print("=" * 52)
-    print("  MC Log Viewer")
-    print(f"  DB: {DB_PATH}")
-    print("=" * 52)
+    setup_logging()
+    LOG.info("MC Log Viewer starting — DB: %s", DB_PATH)
     app.run(host="0.0.0.0", port=5000, debug=True)
