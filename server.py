@@ -4,13 +4,17 @@ MC Log Viewer — Flask web server with MC chat-style rendering.
 Run separately from main.py:  python server.py
 """
 
+import ipaddress
 import re
 import sqlite3
+import threading
 import time
 from functools import wraps
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+from urllib.parse import urlsplit, urlunsplit
 
+import requests
 from flask import (
     Flask, render_template, request, jsonify,
     session, redirect, url_for, flash,
@@ -18,7 +22,15 @@ from flask import (
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from db import (
-    create_query_task, list_query_tasks,
+    SCHEMA,
+    claim_next_sync_task,
+    complete_sync_task,
+    create_query_task,
+    create_sync_task,
+    fail_sync_task,
+    insert_logs,
+    list_query_tasks,
+    list_sync_tasks,
     create_user, get_user_by_username, get_user_by_id,
     update_user_role, update_user_password, delete_user,
     list_users, count_admins,
@@ -28,18 +40,22 @@ from config import FLASK_SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD
 # ── Config ────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "logs.db"
 PER_PAGE = 50
+SYNC_BATCH_SIZE = 200
 TZ = timezone(timedelta(hours=8))  # 北京时间
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
 
 VALID_ROLES = ("user", "admin")
+_SYNC_WORKER: threading.Thread | None = None
+_SYNC_WORKER_LOCK = threading.Lock()
 
 # ── DB helpers ─────────────────────────────────────────────────
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(SCHEMA)
     return conn
 
 
@@ -133,6 +149,162 @@ def admin_required(f):
                                    message="需要管理员权限"), 403
         return f(*args, **kwargs)
     return decorated
+def list_sync_tasks_safe(db: sqlite3.Connection) -> list[dict]:
+    """List recent sync tasks, tolerating older DBs without that table."""
+    try:
+        return list_sync_tasks(db)
+    except sqlite3.OperationalError as exc:
+        if "no such table: sync_tasks" not in str(exc):
+            raise
+        return []
+
+
+def _normalize_remote_url(raw: str) -> str | None:
+    """Validate and normalize a remote viewer URL."""
+    value = raw.strip()
+    if not value:
+        return None
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    # Reject URLs that contain userinfo (user:password@host)
+    if parsed.username or parsed.password:
+        return None
+    # Reject requests to loopback or link-local addresses to prevent SSRF
+    hostname = parsed.hostname or ""
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_loopback or addr.is_link_local or addr.is_private:
+            return None
+    except ValueError:
+        # hostname is a domain name; block well-known local names
+        if hostname.lower() in {"localhost", "ip6-localhost", "ip6-loopback"}:
+            return None
+    path = parsed.path.rstrip("/")
+    for suffix in ("/api/logs/export", "/api/logs"):
+        if path.endswith(suffix):
+            path = path[:-len(suffix)]
+            break
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def _coerce_sync_entries(entries: object) -> list[dict]:
+    """Filter remote sync payload down to safe log entry dicts."""
+    if not isinstance(entries, list):
+        return []
+
+    clean_entries: list[dict] = []
+    for entry in entries[:SYNC_BATCH_SIZE]:
+        if not isinstance(entry, dict):
+            continue
+        log = entry.get("log")
+        name = entry.get("name")
+        if not isinstance(log, str) or not isinstance(name, str):
+            continue
+        try:
+            epoch_ms = int(entry.get("time"))
+        except (TypeError, ValueError):
+            continue
+        try:
+            id_val = int(entry.get("id", 0))
+        except (TypeError, ValueError):
+            id_val = 0
+        using = entry.get("using", "")
+        clean_entries.append({
+            "log": log,
+            "name": name,
+            "time": epoch_ms,
+            "using": using if isinstance(using, str) else "",
+            "id": id_val,
+        })
+    return clean_entries
+
+
+def _fetch_remote_sync_batch(
+    session: requests.Session, remote_url: str, after_time: int, after_id: int
+) -> list[dict]:
+    """Fetch one ascending batch from another Minewatch server."""
+    resp = session.get(
+        f"{remote_url}/api/logs/export",
+        params={
+            "after_time": after_time,
+            "after_id": after_id,
+            "limit": SYNC_BATCH_SIZE,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    entries = _coerce_sync_entries(body.get("entries"))
+    if not entries and body.get("entries"):
+        raise RuntimeError("remote sync payload is invalid")
+    return entries
+
+
+def _process_one_sync_task() -> bool:
+    """Run one queued sync task to completion."""
+    db = get_db()
+    session = requests.Session()
+    try:
+        task = claim_next_sync_task(db)
+        if not task:
+            return False
+
+        task_id, remote_url = task
+        fetched_count = 0
+        inserted_count = 0
+        after_time = 0
+        after_id = 0
+
+        while True:
+            entries = _fetch_remote_sync_batch(session, remote_url, after_time, after_id)
+            if not entries:
+                break
+
+            fetched_count += len(entries)
+            inserted, _ = insert_logs(db, entries, since_time=0)
+            inserted_count += inserted
+
+            tail = entries[-1]
+            after_time = int(tail["time"])
+            after_id = int(tail.get("id", 0))
+            if len(entries) < SYNC_BATCH_SIZE:
+                break
+
+        complete_sync_task(db, task_id, fetched_count, inserted_count)
+        return True
+    except Exception as exc:
+        if "task_id" in locals():
+            fail_sync_task(db, task_id, str(exc))
+        else:
+            # Exception before any task was claimed – sleep briefly to avoid
+            # a tight busy-loop on persistent errors (e.g., DB locked).
+            time.sleep(1)
+        return True
+    finally:
+        session.close()
+        db.close()
+
+
+def _sync_worker_loop() -> None:
+    """Process queued sync tasks sequentially in the background."""
+    global _SYNC_WORKER
+    try:
+        while _process_one_sync_task():
+            pass
+    finally:
+        with _SYNC_WORKER_LOCK:
+            _SYNC_WORKER = None
+
+
+def _ensure_sync_worker() -> None:
+    """Start the background sync worker if it is not already running."""
+    global _SYNC_WORKER
+    with _SYNC_WORKER_LOCK:
+        if _SYNC_WORKER is not None and _SYNC_WORKER.is_alive():
+            return
+        _SYNC_WORKER = threading.Thread(target=_sync_worker_loop, daemon=True)
+        _SYNC_WORKER.start()
 
 # ── Log parsing & formatting ───────────────────────────────────
 
@@ -334,6 +506,7 @@ def index():
             if latest else "无数据"
         )
         query_tasks = list_query_tasks_safe(db)
+        sync_tasks = list_sync_tasks_safe(db)
     finally:
         db.close()
 
@@ -374,6 +547,7 @@ def index():
         query_tasks=query_tasks,
         current_role=role,
         current_username=session.get("username", ""),
+        sync_tasks=sync_tasks,
     )
 
 
@@ -413,6 +587,30 @@ def api_query_tasks():
         db.close()
 
 
+@app.route("/api/sync_tasks", methods=["GET", "POST"])
+def api_sync_tasks():
+    """Create/list database sync tasks."""
+    db = get_db()
+    try:
+        if request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            remote_url = payload.get("remote_url") if isinstance(payload, dict) else ""
+            if not remote_url:
+                remote_url = request.form.get("remote_url", "")
+            if not isinstance(remote_url, str):
+                return jsonify({"error": "remote_url must be a string"}), 400
+            normalized = _normalize_remote_url(remote_url)
+            if not normalized:
+                return jsonify({"error": "remote_url must be a valid http(s) URL"}), 400
+            task_id = create_sync_task(db, normalized)
+            _ensure_sync_worker()
+            return jsonify({"ok": True, "task_id": task_id, "remote_url": normalized})
+
+        return jsonify({"tasks": list_sync_tasks_safe(db)})
+    finally:
+        db.close()
+
+
 @app.route("/api/logs")
 @login_required
 def api_logs():
@@ -438,6 +636,35 @@ def api_logs():
         "page": page,
         "per_page": per_page,
         "entries": [dict(r) for r in rows],
+    })
+
+
+@app.route("/api/logs/export")
+def api_logs_export():
+    """Cursor-based export endpoint for one-way DB sync."""
+    after_time = request.args.get("after_time", 0, type=int)
+    after_id = request.args.get("after_id", 0, type=int)
+    limit = request.args.get("limit", SYNC_BATCH_SIZE, type=int)
+    limit = max(1, min(limit, SYNC_BATCH_SIZE))
+
+    db = get_db()
+    try:
+        rows = db.execute(
+            'SELECT id, log, name, time, "using" FROM logs '
+            "WHERE time > ? OR (time = ? AND id > ?) "
+            "ORDER BY time ASC, id ASC LIMIT ?",
+            (after_time, after_time, after_id, limit),
+        ).fetchall()
+    finally:
+        db.close()
+
+    next_after_time = rows[-1]["time"] if rows else after_time
+    next_after_id = rows[-1]["id"] if rows else after_id
+    return jsonify({
+        "entries": [dict(r) for r in rows],
+        "count": len(rows),
+        "next_after_time": next_after_time,
+        "next_after_id": next_after_id,
     })
 
 
@@ -540,6 +767,7 @@ def api_poll():
             if latest else "无数据"
         )
         query_tasks = list_query_tasks_safe(db)
+        sync_tasks = list_sync_tasks_safe(db)
     finally:
         db.close()
 
@@ -551,6 +779,7 @@ def api_poll():
         "last_update": last_update,
         "total": total,
         "query_tasks": query_tasks,
+        "sync_tasks": sync_tasks,
     })
 
 # ── Admin: user management ─────────────────────────────────────

@@ -450,6 +450,23 @@
         {% endfor %}
       </div>
     </div>
+    <div class="query-box" style="margin-top:12px;">
+      <div class="query-title">数据库同步</div>
+      <div class="query-create">
+        <input id="sync-remote-url" type="text" placeholder="远端 Web 地址，例如 http://host:5000">
+        <button id="sync-submit" type="button">开始同步</button>
+      </div>
+      <div class="query-tasks" id="sync-tasks">
+        {% for t in sync_tasks %}
+        <span class="task-badge task-{{ t.status }}">
+          #{{ t.id }} {{ t.remote_url }} ·
+          {% if t.status == "queued" %}排队中{% elif t.status == "running" %}同步中{% elif t.status == "completed" %}已完成{% elif t.status == "failed" %}失败{% else %}排队中{% endif %}
+        </span>
+        {% else %}
+        <span>暂无同步任务</span>
+        {% endfor %}
+      </div>
+    </div>
   </aside>
 </div>
 
@@ -470,6 +487,9 @@
   const queryInputEl = document.getElementById('query-keyword');
   const querySubmitEl = document.getElementById('query-submit');
   const canCreateTask = {{ 'true' if current_role in ('user', 'admin') else 'false' }};
+  const syncTasksEl = document.getElementById('sync-tasks');
+  const syncInputEl = document.getElementById('sync-remote-url');
+  const syncSubmitEl = document.getElementById('sync-submit');
 
   // Cursor: (maxTime, maxId) — only fetch rows with time >= maxTime AND id > maxId
   let maxTime = parseInt(logArea.dataset.maxTime) || 0;
@@ -516,6 +536,7 @@
         setTimeout(function() { statusEl.textContent = '实时监听中 (15s)'; }, 3000);
       }
       renderQueryTasks(data.query_tasks || []);
+      renderSyncTasks(data.sync_tasks || []);
 
       // Trim old lines to keep DOM at most 500
       while (logArea.children.length > 500) {
@@ -549,6 +570,32 @@
     queryTasksEl.innerHTML = tasks.map(function(task) {
       let status = statusMap[task.status] ? task.status : 'queued';
       let text = '#' + task.id + ' ' + escapeHtml(task.keyword || '') + ' · ' + statusMap[status];
+      if (status === 'completed') {
+        text += ' (' + task.inserted_count + '/' + task.fetched_count + ')';
+      }
+      if (status === 'failed' && task.error) {
+        text += ' (' + escapeHtml(task.error) + ')';
+      }
+      return '<span class="task-badge task-' + status + '" title="' + text + '">' + text + '</span>';
+    }).join('');
+  }
+
+  function renderSyncTasks(tasks) {
+    const statusMap = {
+      queued: '排队中',
+      running: '同步中',
+      completed: '已完成',
+      failed: '失败',
+    };
+    if (!syncTasksEl) return;
+    if (!tasks || tasks.length === 0) {
+      syncTasksEl.innerHTML = '<span>暂无同步任务</span>';
+      return;
+    }
+    syncTasksEl.innerHTML = tasks.map(function(task) {
+      let status = statusMap[task.status] ? task.status : 'queued';
+      let remoteUrl = escapeHtml(task.remote_url || '');
+      let text = '#' + task.id + ' ' + remoteUrl + ' · ' + statusMap[status];
       if (status === 'completed') {
         text += ' (' + task.inserted_count + '/' + task.fetched_count + ')';
       }
@@ -603,6 +650,41 @@
     }
   }
 
+  async function createSyncTask() {
+    const remoteUrl = (syncInputEl && syncInputEl.value || '').trim();
+    if (!remoteUrl || !syncSubmitEl) return;
+    syncSubmitEl.disabled = true;
+    try {
+      const resp = await fetch('/api/sync_tasks', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({remote_url: remoteUrl}),
+      });
+      let data;
+      if (resp.ok) {
+        data = await resp.json();
+      } else {
+        let errMsg = 'HTTP ' + resp.status;
+        try {
+          const errData = await resp.json();
+          errMsg = errData.error || errMsg;
+        } catch (e) {}
+        throw new Error(errMsg);
+      }
+      statusEl.textContent = '同步任务已创建 #' + data.task_id;
+      if (syncInputEl) syncInputEl.value = '';
+      const listResp = await fetch('/api/sync_tasks');
+      if (listResp.ok) {
+        const listData = await listResp.json();
+        renderSyncTasks(listData.tasks || []);
+      }
+    } catch (e) {
+      statusEl.textContent = '创建同步任务失败: ' + e.message;
+    } finally {
+      syncSubmitEl.disabled = false;
+    }
+  }
+
   // Start first poll after interval
   pollTimer = setTimeout(poll, POLL_INTERVAL);
   if (canCreateTask && querySubmitEl) {
@@ -613,6 +695,17 @@
       if (e.key === 'Enter') {
         e.preventDefault();
         createQueryTask();
+      }
+    });
+  }
+  if (syncSubmitEl) {
+    syncSubmitEl.addEventListener('click', createSyncTask);
+  }
+  if (syncInputEl) {
+    syncInputEl.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        createSyncTask();
       }
     });
   }
