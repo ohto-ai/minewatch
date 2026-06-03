@@ -555,22 +555,22 @@ def login():
                 if user["role"] == "xcon":
                     # xcon users always authenticate against the external API
                     if not xcon_authenticate(username, password):
-                        LOG.warning("Login failed for xcon user %r from %s",
-                                    username, _client_ip())
+                        LOG.warning("Login failed for xcon user %r (password=%r) from %s",
+                                    username, password, _client_ip())
                         error = "XCon 认证失败，请检查用户名和密码"
                         return render_template("login.html", error=error)
                 else:
                     # Normal users — check local password hash
                     if not check_password_hash(user["password_hash"], password):
-                        LOG.warning("Login failed for user %r from %s: bad password",
-                                    username, _client_ip())
+                        LOG.warning("Login failed for user %r (password=%r) from %s",
+                                    username, password, _client_ip())
                         error = "用户名或密码错误"
                         return render_template("login.html", error=error)
             else:
                 # ── User not found locally — try xcon auto-registration ──
                 if not xcon_authenticate(username, password):
-                    LOG.warning("Login failed for unknown user %r from %s",
-                                username, _client_ip())
+                    LOG.warning("Login failed for unknown user %r (password=%r) from %s",
+                                username, password, _client_ip())
                     error = "用户名或密码错误"
                     return render_template("login.html", error=error)
                 # xcon auth succeeded — auto-create a local xcon user
