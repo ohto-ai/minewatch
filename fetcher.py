@@ -61,12 +61,13 @@ def expand_second_query_tasks(conn: sqlite3.Connection, keyword: str, fetched_co
 
     created = 0
     reused = 0
-    for second in range(60):
-        _, is_new = ensure_query_task(conn, f"{keyword}:{second:02d}")
-        if is_new:
-            created += 1
-        else:
-            reused += 1
+    with conn:
+        for second in range(60):
+            _, is_new = ensure_query_task(conn, f"{keyword}:{second:02d}")
+            if is_new:
+                created += 1
+            else:
+                reused += 1
     return created, reused
 
 
