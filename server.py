@@ -37,7 +37,7 @@ from db import (
     update_user_role, update_user_password, delete_user,
     list_users, count_admins,
 )
-from config import FLASK_SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_SHARED_TOKEN, BASE_URL
+from config import FLASK_SECRET_KEY, SYNC_SHARED_TOKEN, BASE_URL
 
 # ── Config ────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "logs.db"
@@ -73,26 +73,6 @@ def list_query_tasks_safe(db: sqlite3.Connection) -> list[dict]:
         return []
 
 
-def _ensure_default_admin() -> None:
-    """Create the default admin account if no users exist yet."""
-    db = get_db()
-    try:
-        row = db.execute("SELECT COUNT(*) FROM users").fetchone()
-        if row and row[0] == 0:
-            pwd_hash = generate_password_hash(ADMIN_PASSWORD)
-            try:
-                create_user(db, ADMIN_USERNAME, pwd_hash, role="admin")
-            except sqlite3.IntegrityError:
-                return
-            print(f"[auth] Default admin created: username={ADMIN_USERNAME!r}")
-    except sqlite3.OperationalError:
-        pass  # users table may not exist yet (init_db called separately)
-    finally:
-        db.close()
-
-
-_ensure_default_admin()
-
 # ── Auth helpers ───────────────────────────────────────────────
 
 def current_user() -> dict | None:
@@ -105,6 +85,30 @@ def current_user() -> dict | None:
         return get_user_by_id(db, user_id)
     finally:
         db.close()
+
+
+def _has_no_users() -> bool:
+    """Return True if the users table is empty, indicating setup is needed."""
+    db = get_db()
+    try:
+        row = db.execute("SELECT COUNT(*) FROM users").fetchone()
+        return row is None or row[0] == 0
+    finally:
+        db.close()
+
+
+@app.before_request
+def _check_setup_needed() -> None:
+    """Redirect all requests to /setup when no user accounts exist yet.
+
+    This handler runs before _refresh_authenticated_session so that
+    unauthenticated traffic is caught early.  Requests to /setup itself
+    and static files are exempt to avoid redirect loops.
+    """
+    if request.path == "/setup" or request.path.startswith("/static/"):
+        return
+    if _has_no_users():
+        return redirect(url_for("setup"))
 
 
 @app.before_request
@@ -532,6 +536,58 @@ def login():
         finally:
             db.close()
     return render_template("login.html", error=error)
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    """First-run setup wizard: create the initial admin account.
+
+    Only accessible when the users table is empty.  Once an account
+    exists, every request to /setup is redirected to /login.
+    """
+    if not _has_no_users():
+        return redirect(url_for("login"))
+
+    if request.method == "POST":
+        if not _csrf_valid():
+            return render_template("setup.html", error="请求已失效，请刷新页面后重试"), 400
+
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm  = request.form.get("confirm_password", "")
+
+        # ── Validation ──
+        if not username:
+            error = "用户名不能为空"
+        elif len(username) > 64:
+            error = "用户名过长（最多 64 字符）"
+        elif not password:
+            error = "密码不能为空"
+        elif len(password) < 6:
+            error = "密码过短（至少 6 位）"
+        elif password != confirm:
+            error = "两次输入的密码不一致"
+        else:
+            db = get_db()
+            try:
+                # Re-check to handle concurrent setup requests safely.
+                row = db.execute("SELECT COUNT(*) FROM users").fetchone()
+                if row and row[0] > 0:
+                    return redirect(url_for("login"))
+                pwd_hash = generate_password_hash(password)
+                create_user(db, username, pwd_hash, role="admin",
+                            password_plain=password)
+                return redirect(url_for("login"))
+            except sqlite3.IntegrityError:
+                # Race: another request created the first user between our
+                # check and insert.  That's fine — just redirect to login.
+                return redirect(url_for("login"))
+            finally:
+                db.close()
+
+        return render_template("setup.html", error=error)
+
+    return render_template("setup.html")
 
 
 @app.route("/logout", methods=["POST"])
@@ -1079,7 +1135,6 @@ def _page_window(page: int, total: int, width: int = 7) -> list:
 if __name__ == "__main__":
     from db import init_db
     init_db(DB_PATH)
-    _ensure_default_admin()
     print("=" * 52)
     print("  MC Log Viewer")
     print(f"  DB: {DB_PATH}")

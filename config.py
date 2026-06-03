@@ -73,9 +73,8 @@ TOKEN_EXPIRY_BUFFER = 60
 # sessions are invalidated on every server restart in that case.
 FLASK_SECRET_KEY: str = os.getenv("FLASK_SECRET_KEY") or _secrets.token_hex(32)
 
-# Default admin credentials (used only when no users exist in the database).
-ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin")
+# First admin account is created via the web setup wizard at /setup
+# when the application runs for the first time with an empty database.
 
 # Shared token used by inter-server sync requests to /api/logs/export.
 SYNC_SHARED_TOKEN: str = os.getenv("SYNC_SHARED_TOKEN", "")
