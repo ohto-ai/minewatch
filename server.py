@@ -110,7 +110,8 @@ def _refresh_authenticated_session() -> None:
         return
     now = time.time()
     last_refresh = float(session.get("_auth_refreshed_at", 0))
-    if request.path.startswith("/api/") and (now - last_refresh) < AUTH_REFRESH_INTERVAL_SECONDS:
+    # API routes may include privileged actions; always refresh role/user state.
+    if (not request.path.startswith("/api/")) and (now - last_refresh) < AUTH_REFRESH_INTERVAL_SECONDS:
         return
     user = current_user()
     if user is None:
@@ -158,7 +159,8 @@ def login_required(f):
                 return jsonify({"error": "authentication required"}), 401
             # Store the destination server-side so /login never reads
             # an attacker-controlled redirect URL from the query string.
-            session["_next"] = request.path
+            next_path = request.full_path if request.method in {"GET", "HEAD"} else "/"
+            session["_next"] = next_path[:-1] if next_path.endswith("?") else next_path
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated
@@ -171,7 +173,8 @@ def admin_required(f):
         if not session.get("user_id"):
             if request.is_json or request.path.startswith("/api/"):
                 return jsonify({"error": "authentication required"}), 401
-            session["_next"] = request.path
+            next_path = request.full_path if request.method in {"GET", "HEAD"} else "/"
+            session["_next"] = next_path[:-1] if next_path.endswith("?") else next_path
             return redirect(url_for("login"))
         if session.get("role") != "admin":
             if request.is_json or request.path.startswith("/api/"):
@@ -476,8 +479,10 @@ def login():
     return render_template("login.html", error=error)
 
 
-@app.route("/logout")
+@app.route("/logout", methods=["POST"])
 def logout():
+    if not _csrf_valid():
+        return render_template("error.html", code=400, message="请求已失效，请刷新页面后重试"), 400
     session.clear()
     return redirect(url_for("login"))
 
@@ -692,7 +697,9 @@ def api_logs_export():
         token = request.headers.get("X-Sync-Token", "").strip()
         auth = request.headers.get("Authorization", "").strip()
         bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        if not SYNC_SHARED_TOKEN or (token != SYNC_SHARED_TOKEN and bearer != SYNC_SHARED_TOKEN):
+        token_ok = bool(token) and hmac.compare_digest(token, SYNC_SHARED_TOKEN)
+        bearer_ok = bool(bearer) and hmac.compare_digest(bearer, SYNC_SHARED_TOKEN)
+        if not SYNC_SHARED_TOKEN or (not token_ok and not bearer_ok):
             return jsonify({"error": "authentication required"}), 401
 
     after_time = request.args.get("after_time", 0, type=int)

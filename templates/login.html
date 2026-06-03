@@ -92,10 +92,10 @@
   {% endif %}
   <form method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label>用户名</label>
-    <input type="text" name="username" autofocus autocomplete="username" required>
-    <label>密码</label>
-    <input type="password" name="password" autocomplete="current-password" required>
+    <label for="username">用户名</label>
+    <input id="username" type="text" name="username" autofocus autocomplete="username" required>
+    <label for="password">密码</label>
+    <input id="password" type="password" name="password" autocomplete="current-password" required>
     <button type="submit">登 录</button>
   </form>
 </div>

@@ -381,7 +381,12 @@
   <a href="/admin/users" style="color:var(--muted);font-size:12px;text-decoration:none;">用户管理</a>
   {% endif %}
   <span style="color:var(--muted);font-size:12px;">{{ current_username }}</span>
-  <a href="/logout" style="color:var(--muted);font-size:12px;text-decoration:none;">退出</a>
+  <form method="post" action="/logout" style="display:inline;margin:0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" style="background:none;border:none;color:var(--muted);font-size:12px;text-decoration:none;cursor:pointer;padding:0;">
+      退出
+    </button>
+  </form>
 </div>
 
 <div class="page-shell">

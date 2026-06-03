@@ -347,6 +347,8 @@ def count_admins(conn: sqlite3.Connection) -> int:
         "SELECT COUNT(*) FROM users WHERE role = 'admin'"
     ).fetchone()
     return int(row[0]) if row else 0
+
+
 def claim_next_sync_task(conn: sqlite3.Connection) -> tuple[int, str] | None:
     """Claim the oldest queued sync task and mark it running."""
     with conn:
