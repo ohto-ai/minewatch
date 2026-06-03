@@ -43,6 +43,7 @@ from config import FLASK_SECRET_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SYNC_SHARED
 DB_PATH = Path(__file__).parent / "logs.db"
 PER_PAGE = 50
 SYNC_BATCH_SIZE = 200
+AUTH_REFRESH_INTERVAL_SECONDS = 5
 TZ = timezone(timedelta(hours=8))  # 北京时间
 
 app = Flask(__name__)
@@ -107,12 +108,17 @@ def _refresh_authenticated_session() -> None:
     """Keep session role/username in sync with current database state."""
     if not session.get("user_id"):
         return
+    now = time.time()
+    last_refresh = float(session.get("_auth_refreshed_at", 0))
+    if request.path.startswith("/api/") and (now - last_refresh) < AUTH_REFRESH_INTERVAL_SECONDS:
+        return
     user = current_user()
     if user is None:
         session.clear()
         return
     session["username"] = user["username"]
     session["role"] = user["role"]
+    session["_auth_refreshed_at"] = now
 
 
 def _csrf_token() -> str:
@@ -448,6 +454,8 @@ def login():
         return redirect(url_for("index"))
     error = None
     if request.method == "POST":
+        if not _csrf_valid():
+            return render_template("login.html", error="请求已失效，请刷新页面后重试"), 400
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         db = get_db()
@@ -592,10 +600,12 @@ def api_query_tasks():
     db = get_db()
     try:
         if request.method == "POST":
-            payload = request.get_json(silent=True) or {}
-            keyword = payload.get("keyword") if isinstance(payload, dict) else ""
-            if not keyword:
-                keyword = request.form.get("keyword", "")
+            if not request.is_json:
+                return jsonify({"error": "content type must be application/json"}), 415
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({"error": "invalid json payload"}), 400
+            keyword = payload.get("keyword")
             if not isinstance(keyword, str):
                 return jsonify({"error": "keyword must be a string"}), 400
             keyword = keyword.strip()
@@ -627,10 +637,12 @@ def api_sync_tasks():
     db = get_db()
     try:
         if request.method == "POST":
-            payload = request.get_json(silent=True) or {}
-            remote_url = payload.get("remote_url") if isinstance(payload, dict) else ""
-            if not remote_url:
-                remote_url = request.form.get("remote_url", "")
+            if not request.is_json:
+                return jsonify({"error": "content type must be application/json"}), 415
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({"error": "invalid json payload"}), 400
+            remote_url = payload.get("remote_url")
             if not isinstance(remote_url, str):
                 return jsonify({"error": "remote_url must be a string"}), 400
             normalized = _normalize_remote_url(remote_url)

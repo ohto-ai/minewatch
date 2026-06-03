@@ -91,6 +91,7 @@
   <div class="error">{{ error }}</div>
   {% endif %}
   <form method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label>用户名</label>
     <input type="text" name="username" autofocus autocomplete="username" required>
     <label>密码</label>

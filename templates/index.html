@@ -437,7 +437,7 @@
         <button id="query-submit" type="button">创建任务</button>
       </div>
       {% else %}
-      <div style="font-size:11px;color:var(--muted);padding:2px 0 4px;">（普通用户可发起查询任务）</div>
+      <div style="font-size:11px;color:var(--muted);padding:2px 0 4px;">（当前账号无权限发起查询任务）</div>
       {% endif %}
       <div class="query-tasks" id="query-tasks">
         {% for t in query_tasks %}
