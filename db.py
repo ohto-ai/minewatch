@@ -112,12 +112,23 @@ def claim_next_query_task(conn: sqlite3.Connection) -> tuple[int, str] | None:
             return None
 
         task_id, keyword = int(row[0]), str(row[1])
-        conn.execute(
+        cur = conn.execute(
             "UPDATE query_tasks SET status = 'running', "
-            "started_at = CURRENT_TIMESTAMP, error = '' WHERE id = ?",
+            "started_at = CURRENT_TIMESTAMP, error = '' "
+            "WHERE id = ? AND status = 'queued'",
             (task_id,),
         )
+        if cur.rowcount != 1:
+            return None
     return task_id, keyword
+
+
+def has_queued_query_task(conn: sqlite3.Connection) -> bool:
+    """Return whether there is another queued task waiting."""
+    row = conn.execute(
+        "SELECT 1 FROM query_tasks WHERE status = 'queued' LIMIT 1"
+    ).fetchone()
+    return row is not None
 
 
 def complete_query_task(

@@ -12,7 +12,7 @@ from config import LOG_URL, LOG_REFERER, QUERY_TASK_STEP_INTERVAL
 from auth import get_auth_headers
 from db import (
     insert_logs, count_logs, get_latest_time, claim_next_query_task,
-    complete_query_task, fail_query_task,
+    complete_query_task, fail_query_task, has_queued_query_task,
 )
 from schedule import get_interval, describe
 
@@ -83,7 +83,7 @@ def process_queued_query_tasks(
     processed = 0
     while process_one_query_task(conn, session):
         processed += 1
-        if task_interval > 0:
+        if task_interval > 0 and has_queued_query_task(conn):
             _time.sleep(task_interval)
     return processed
 

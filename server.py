@@ -27,6 +27,16 @@ def get_db() -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
+
+def list_query_tasks_safe(db: sqlite3.Connection) -> list[dict]:
+    """List recent query tasks, tolerating older DBs without that table."""
+    try:
+        return list_query_tasks(db)
+    except sqlite3.OperationalError as exc:
+        if "no such table: query_tasks" not in str(exc):
+            raise
+        return []
+
 # ── Log parsing & formatting ───────────────────────────────────
 
 # Header: [HH:MM:SS LEVEL]: message  (standard MC console)
@@ -204,7 +214,7 @@ def index():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
-        query_tasks = list_query_tasks(db)
+        query_tasks = list_query_tasks_safe(db)
     finally:
         db.close()
 
@@ -262,7 +272,7 @@ def api_query_tasks():
             task_id = create_query_task(db, keyword)
             return jsonify({"ok": True, "task_id": task_id})
 
-        return jsonify({"tasks": list_query_tasks(db)})
+        return jsonify({"tasks": list_query_tasks_safe(db)})
     finally:
         db.close()
 
@@ -390,12 +400,7 @@ def api_poll():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
-        try:
-            query_tasks = list_query_tasks(db)
-        except sqlite3.OperationalError as exc:
-            if "no such table: query_tasks" not in str(exc):
-                raise
-            query_tasks = []
+        query_tasks = list_query_tasks_safe(db)
     finally:
         db.close()
 
