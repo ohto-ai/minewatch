@@ -94,6 +94,15 @@ def setup_logging() -> None:
     ch.setFormatter(fmt)
     log.addHandler(ch)
 
+    # Waitress request logging — use same handlers so GET/POST lines
+    # appear in both console and rotating file in production mode.
+    for logger_name in ("waitress", "waitress.queue"):
+        wlog = logging.getLogger(logger_name)
+        wlog.setLevel(logging.INFO)
+        wlog.handlers.clear()
+        wlog.addHandler(fh)
+        wlog.addHandler(ch)
+
 
 LOG = logging.getLogger("server")
 
