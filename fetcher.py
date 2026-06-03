@@ -23,6 +23,10 @@ ESC = "\x1b"
 # Regex to strip Minecraft ANSI CSI sequences: ESC[ <params> <letter>
 _ANSI_CSI = re.compile(ESC + r"\[[0-9;]*[a-zA-Z]")
 _ANSI_LINE_CLEAR = re.compile(ESC + r"\[K")
+# Strip ANSI remnant — bracket-only fragments like [m> or [0m> that survive
+# after the ESC byte has already been stripped upstream.  These appear before
+# the real [HH:MM:SS LEVEL] header and break timestamp parsing in server.py.
+_RE_ANSI_REMNANT = re.compile(r"^(?:\[[0-9;]*m>?\s*)+")
 _MINUTE_KEYWORD = re.compile(r"^\d{2}:\d{2}$")
 
 
@@ -32,6 +36,7 @@ def clean_log(raw: str) -> str:
     text = _ANSI_LINE_CLEAR.sub("", text)  # line-clear sequences
     text = text.replace("\r", "")           # carriage return
     text = text.replace(ESC, "")            # any stray bare ESC
+    text = _RE_ANSI_REMNANT.sub("", text)  # ANSI remnants like [m> after ESC stripped
     return text.strip()
 
 

@@ -422,12 +422,14 @@ def _ensure_sync_worker() -> None:
 # ── Log parsing & formatting ───────────────────────────────────
 
 # Header: [HH:MM:SS LEVEL]: message  (standard MC console)
+# Tolerate optional ANSI-remnant prefixes like [m> or [0m> that survive
+# after ESC bytes are stripped upstream.
 RE_HEAD = re.compile(
-    r"^>?\s*\[(\d{2}:\d{2}:\d{2})\s+(INFO|WARN|ERROR)\]:\s*(.*)", re.DOTALL
+    r"^(?:\[[0-9;]*m>?\s*)*\[(\d{2}:\d{2}:\d{2})\s+(INFO|WARN|ERROR)\]:\s*(.*)", re.DOTALL
 )
 # Header: [HH:MM:SS] [ThreadName/LEVEL]: message  (log4j / Paper)
 RE_HEAD_ALT = re.compile(
-    r"^>?\s*\[(\d{2}:\d{2}:\d{2})\]\s*\[[^]]*?/(INFO|WARN|ERROR)\]:\s*(.*)", re.DOTALL
+    r"^(?:\[[0-9;]*m>?\s*)*\[(\d{2}:\d{2}:\d{2})\]\s*\[[^]]*?/(INFO|WARN|ERROR)\]:\s*(.*)", re.DOTALL
 )
 RE_PLUGIN = re.compile(r"\[([A-Za-z][\w.]+)\]")
 
