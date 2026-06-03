@@ -1283,4 +1283,10 @@ if __name__ == "__main__":
     setup_logging()
     LOG.info("MC Log Viewer starting — DB: %s", DB_PATH)
     debug_mode = os.environ.get("FLASK_DEBUG", "0") == "1"
-    app.run(host="0.0.0.0", port=5000, debug=debug_mode)
+
+    if debug_mode:
+        app.run(host="0.0.0.0", port=5000, debug=True)
+    else:
+        from waitress import serve
+        LOG.info("Starting Waitress (production mode) on 0.0.0.0:5000")
+        serve(app, host="0.0.0.0", port=5000)
