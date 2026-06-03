@@ -6,6 +6,7 @@
 
 ```
 main.py         入口，启动轮询循环
+backfill_time_keywords.py  服务器端批量回填关键词脚本
 fetcher.py      从远端 API 拉取日志，清洗 ANSI 转义码
 auth.py         JWT 认证与 Token 自动续期
 db.py           SQLite 读写（WAL 模式，去重写入）
@@ -57,6 +58,23 @@ python server.py
 ```
 
 浏览器打开 `http://localhost:5000`。
+
+### 4. 服务器端补抓旧日志
+
+当远端接口单次只返回 100 条日志时，可以先把“全天每分钟”的时间字符串批量加入查询队列，再由采集器慢慢回填历史消息：
+
+```bash
+python backfill_time_keywords.py
+python main.py
+```
+
+默认会创建 `00:00` 到 `23:59` 的 1440 个关键词任务；重复执行会跳过已存在任务，并自动重试之前失败的任务。
+
+如果只想补抓部分时段，也可以限制小时范围：
+
+```bash
+python backfill_time_keywords.py --from-hour 8 --to-hour 12
+```
 
 ## Web 界面功能
 

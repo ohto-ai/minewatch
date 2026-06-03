@@ -101,6 +101,34 @@ def create_query_task(conn: sqlite3.Connection, keyword: str) -> int:
     return int(cur.lastrowid)
 
 
+def ensure_query_task(conn: sqlite3.Connection, keyword: str) -> tuple[int, bool]:
+    """
+    Ensure a query task exists for `keyword`.
+    Returns (task_id, created_new).
+
+    Existing queued/running/completed tasks are reused.
+    Failed tasks are reset back to queued for retry.
+    """
+    row = conn.execute(
+        "SELECT id, status FROM query_tasks WHERE keyword = ? "
+        "ORDER BY id DESC LIMIT 1",
+        (keyword,),
+    ).fetchone()
+    if row:
+        task_id, status = int(row[0]), str(row[1])
+        if status == "failed":
+            with conn:
+                conn.execute(
+                    "UPDATE query_tasks SET status = 'queued', fetched_count = 0, "
+                    "inserted_count = 0, error = '', started_at = NULL, "
+                    "finished_at = NULL WHERE id = ?",
+                    (task_id,),
+                )
+            return task_id, False
+        return task_id, False
+    return create_query_task(conn, keyword), True
+
+
 def claim_next_query_task(conn: sqlite3.Connection) -> tuple[int, str] | None:
     """Claim the oldest queued task and mark it running."""
     with conn:
