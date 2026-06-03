@@ -17,6 +17,21 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(time);
+
+CREATE TABLE IF NOT EXISTS query_tasks (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    keyword        TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'queued',
+    fetched_count  INTEGER NOT NULL DEFAULT 0,
+    inserted_count INTEGER NOT NULL DEFAULT 0,
+    error          TEXT NOT NULL DEFAULT '',
+    created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at     TIMESTAMP,
+    finished_at    TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_tasks_status_id
+ON query_tasks(status, id);
 '''
 
 INSERT_SQL = '''
@@ -74,3 +89,78 @@ def count_logs(conn: sqlite3.Connection) -> int:
     """Return total number of log entries stored."""
     row = conn.execute("SELECT COUNT(*) FROM logs").fetchone()
     return row[0] if row else 0
+
+
+def create_query_task(conn: sqlite3.Connection, keyword: str) -> int:
+    """Create a query task and return its id."""
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO query_tasks (keyword, status) VALUES (?, 'queued')",
+            (keyword,),
+        )
+    return int(cur.lastrowid)
+
+
+def claim_next_query_task(conn: sqlite3.Connection) -> tuple[int, str] | None:
+    """Claim the oldest queued task and mark it running."""
+    with conn:
+        row = conn.execute(
+            "SELECT id, keyword FROM query_tasks WHERE status = 'queued' "
+            "ORDER BY id ASC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None
+
+        task_id, keyword = int(row[0]), str(row[1])
+        conn.execute(
+            "UPDATE query_tasks SET status = 'running', "
+            "started_at = CURRENT_TIMESTAMP, error = '' WHERE id = ?",
+            (task_id,),
+        )
+    return task_id, keyword
+
+
+def complete_query_task(
+    conn: sqlite3.Connection, task_id: int, fetched_count: int, inserted_count: int
+) -> None:
+    """Mark a query task as completed."""
+    with conn:
+        conn.execute(
+            "UPDATE query_tasks SET status = 'completed', fetched_count = ?, "
+            "inserted_count = ?, finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (fetched_count, inserted_count, task_id),
+        )
+
+
+def fail_query_task(conn: sqlite3.Connection, task_id: int, error: str) -> None:
+    """Mark a query task as failed."""
+    with conn:
+        conn.execute(
+            "UPDATE query_tasks SET status = 'failed', error = ?, "
+            "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (error[:500], task_id),
+        )
+
+
+def list_query_tasks(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:
+    """List recent query tasks for UI polling."""
+    rows = conn.execute(
+        "SELECT id, keyword, status, fetched_count, inserted_count, error, "
+        "created_at, started_at, finished_at "
+        "FROM query_tasks ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    tasks: list[dict] = []
+    for row in rows:
+        tasks.append({
+            "id": int(row[0]),
+            "keyword": str(row[1]),
+            "status": str(row[2]),
+            "fetched_count": int(row[3]),
+            "inserted_count": int(row[4]),
+            "error": str(row[5]) if row[5] is not None else "",
+            "created_at": row[6],
+            "started_at": row[7],
+            "finished_at": row[8],
+        })
+    return tasks

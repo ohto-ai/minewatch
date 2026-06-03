@@ -10,7 +10,10 @@ import requests
 
 from config import LOG_URL, LOG_REFERER
 from auth import get_auth_headers
-from db import insert_logs, count_logs, get_latest_time
+from db import (
+    insert_logs, count_logs, get_latest_time, claim_next_query_task,
+    complete_query_task, fail_query_task,
+)
 from schedule import get_interval, describe
 
 # ESC character (0x1B) — appears as  in JSON, decoded by json.loads
@@ -49,6 +52,28 @@ def fetch_logs(session: requests.Session, search: str = "") -> list[dict]:
     return body.get("data", [])
 
 
+def process_one_query_task(conn: sqlite3.Connection, session: requests.Session) -> None:
+    """Process one queued query task, if available."""
+    task = claim_next_query_task(conn)
+    if not task:
+        return
+
+    task_id, keyword = task
+    print(f"[task#{task_id}] running keyword={keyword!r}")
+
+    try:
+        entries = fetch_logs(session, search=keyword)
+        for entry in entries:
+            entry["log"] = clean_log(entry["log"])
+        inserted_count, _ = insert_logs(conn, entries, since_time=0)
+        complete_query_task(conn, task_id, fetched_count=len(entries),
+                            inserted_count=inserted_count)
+        print(f"[task#{task_id}] completed fetched={len(entries)} inserted={inserted_count}")
+    except Exception as e:
+        fail_query_task(conn, task_id, str(e))
+        print(f"[task#{task_id}] failed: {e}")
+
+
 def poll_loop(conn: sqlite3.Connection) -> None:
     """Main polling loop — fetch, clean, store, repeat."""
     session = requests.Session()
@@ -81,6 +106,8 @@ def poll_loop(conn: sqlite3.Connection) -> None:
                     latest = entries[0]["log"] if entries else ""
                     preview = latest[:90] + "..." if len(latest) > 90 else latest
                     print(f"[+{new_count:>3}] total={total_stored:<8} | {preview}")
+
+                process_one_query_task(conn, session)
 
                 # Dynamic interval — may change across time boundaries
                 interval = get_interval()

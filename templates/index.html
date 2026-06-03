@@ -233,6 +233,45 @@
   .btn-apply:hover, .btn-reset:hover { border-color: var(--accent); background: var(--hover-bg); }
   .btn-apply { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+  /* ── Query tasks ───────────────────────────── */
+  .query-box {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 320px;
+  }
+  .query-create {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .query-create input {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 4px 8px;
+    font: inherit; font-size: 12px;
+    width: 180px;
+  }
+  .query-tasks {
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .task-badge {
+    border: 1px solid var(--border);
+    background: var(--bg);
+    padding: 1px 6px;
+    border-radius: 10px;
+    white-space: nowrap;
+  }
+  .task-queued { color: #9a9a9a; }
+  .task-running { color: var(--gold); }
+  .task-completed { color: var(--green); }
+  .task-failed { color: var(--err); }
+
   /* ── Footer ────────────────────────────────── */
   footer {
     text-align: center;
@@ -286,6 +325,24 @@
       <a href="/" class="btn-reset">清除</a>
     </div>
   </form>
+
+  <div class="query-box">
+    <div class="query-create">
+      <span class="flabel">查询任务:</span>
+      <input id="query-keyword" type="text" placeholder="输入关键词后提交到 fetcher 队列">
+      <button id="query-submit" type="button">创建任务</button>
+    </div>
+    <div class="query-tasks" id="query-tasks">
+      {% for t in query_tasks %}
+      <span class="task-badge task-{{ t.status }}">
+        #{{ t.id }} {{ t.keyword }} ·
+        {% if t.status == "queued" %}排队中{% elif t.status == "running" %}执行中{% elif t.status == "completed" %}已完成{% elif t.status == "failed" %}失败{% else %}排队中{% endif %}
+      </span>
+      {% else %}
+      <span>暂无查询任务</span>
+      {% endfor %}
+    </div>
+  </div>
 
   <span class="meta">共 {{ total }} 条 &nbsp;|&nbsp; 更新于 {{ last_update }}</span>
   <button onclick="location.reload()">↻ 刷新</button>
@@ -346,6 +403,9 @@
   const logArea = document.querySelector('.log-area');
   const statusEl = document.getElementById('poll-status');
   const metaEl = document.querySelector('.topbar .meta');
+  const queryTasksEl = document.getElementById('query-tasks');
+  const queryInputEl = document.getElementById('query-keyword');
+  const querySubmitEl = document.getElementById('query-submit');
 
   // Cursor: (maxTime, maxId) — only fetch rows with time >= maxTime AND id > maxId
   let maxTime = parseInt(logArea.dataset.maxTime) || 0;
@@ -386,6 +446,7 @@
         statusEl.textContent = '实时监听中 (15s) — +' + data.count + ' 条新消息';
         setTimeout(function() { statusEl.textContent = '实时监听中 (15s)'; }, 3000);
       }
+      renderQueryTasks(data.query_tasks || []);
 
       // Trim old lines to keep DOM at most 500
       while (logArea.children.length > 500) {
@@ -404,8 +465,79 @@
     }
   }
 
+  function renderQueryTasks(tasks) {
+    const statusMap = {
+      queued: '排队中',
+      running: '执行中',
+      completed: '已完成',
+      failed: '失败',
+    };
+    if (!queryTasksEl) return;
+    if (!tasks || tasks.length === 0) {
+      queryTasksEl.innerHTML = '<span>暂无查询任务</span>';
+      return;
+    }
+    queryTasksEl.innerHTML = tasks.map(function(task) {
+      let status = statusMap[task.status] ? task.status : 'queued';
+      let text = '#' + task.id + ' ' + escapeHtml(task.keyword || '') + ' · ' + statusMap[status];
+      if (status === 'completed') {
+        text += ' (' + task.inserted_count + '/' + task.fetched_count + ')';
+      }
+      if (status === 'failed' && task.error) {
+        text += ' (' + escapeHtml(task.error) + ')';
+      }
+      return '<span class="task-badge task-' + status + '">' + text + '</span>';
+    }).join('');
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+  }
+
+  async function createQueryTask() {
+    const keyword = (queryInputEl && queryInputEl.value || '').trim();
+    if (!keyword || !querySubmitEl) return;
+    querySubmitEl.disabled = true;
+    try {
+      const resp = await fetch('/api/query_tasks', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({keyword: keyword}),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+      statusEl.textContent = '查询任务已创建 #' + data.task_id;
+      if (queryInputEl) queryInputEl.value = '';
+      const listResp = await fetch('/api/query_tasks');
+      if (listResp.ok) {
+        const listData = await listResp.json();
+        renderQueryTasks(listData.tasks || []);
+      }
+    } catch (e) {
+      statusEl.textContent = '创建任务失败: ' + e.message;
+    } finally {
+      querySubmitEl.disabled = false;
+    }
+  }
+
   // Start first poll after interval
   pollTimer = setTimeout(poll, POLL_INTERVAL);
+  if (querySubmitEl) {
+    querySubmitEl.addEventListener('click', createQueryTask);
+  }
+  if (queryInputEl) {
+    queryInputEl.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        createQueryTask();
+      }
+    });
+  }
 
   window.addEventListener('beforeunload', function() {
     clearTimeout(pollTimer);

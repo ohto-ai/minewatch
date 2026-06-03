@@ -11,6 +11,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
 from flask import Flask, render_template, request, jsonify
+from db import create_query_task, list_query_tasks
 
 # ── Config ────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "logs.db"
@@ -203,6 +204,7 @@ def index():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
+        query_tasks = list_query_tasks(db)
     finally:
         db.close()
 
@@ -238,7 +240,31 @@ def index():
         max_time=max_time,
         max_id=max_id,
         now_ts=int(time.time()),
+        query_tasks=query_tasks,
     )
+
+
+@app.route("/api/query_tasks", methods=["GET", "POST"])
+def api_query_tasks():
+    """Create/list fetcher query tasks."""
+    db = get_db()
+    try:
+        if request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            keyword = payload.get("keyword") if isinstance(payload, dict) else ""
+            if not keyword:
+                keyword = request.form.get("keyword", "")
+            keyword = (keyword or "").strip()
+            if not keyword:
+                return jsonify({"error": "keyword required"}), 400
+            if len(keyword) > 100:
+                return jsonify({"error": "keyword too long"}), 400
+            task_id = create_query_task(db, keyword)
+            return jsonify({"ok": True, "task_id": task_id})
+
+        return jsonify({"tasks": list_query_tasks(db)})
+    finally:
+        db.close()
 
 
 @app.route("/api/logs")
@@ -364,6 +390,7 @@ def api_poll():
             datetime.fromtimestamp(latest / 1000, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
             if latest else "无数据"
         )
+        query_tasks = list_query_tasks(db)
     finally:
         db.close()
 
@@ -374,6 +401,7 @@ def api_poll():
         "max_id": new_max_id,
         "last_update": last_update,
         "total": total,
+        "query_tasks": query_tasks,
     })
 
 # ── Pagination helpers ─────────────────────────────────────────
