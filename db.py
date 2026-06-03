@@ -456,6 +456,32 @@ def fail_sync_task(conn: sqlite3.Connection, task_id: int, error: str) -> None:
         )
 
 
+def delete_query_tasks(conn: sqlite3.Connection, statuses: list[str]) -> int:
+    """Delete query tasks matching the given statuses. Returns count deleted."""
+    if not statuses:
+        return 0
+    placeholders = ",".join("?" for _ in statuses)
+    with conn:
+        cur = conn.execute(
+            f"DELETE FROM query_tasks WHERE status IN ({placeholders})",
+            statuses,
+        )
+    return cur.rowcount
+
+
+def delete_sync_tasks(conn: sqlite3.Connection, statuses: list[str]) -> int:
+    """Delete sync tasks matching the given statuses. Returns count deleted."""
+    if not statuses:
+        return 0
+    placeholders = ",".join("?" for _ in statuses)
+    with conn:
+        cur = conn.execute(
+            f"DELETE FROM sync_tasks WHERE status IN ({placeholders})",
+            statuses,
+        )
+    return cur.rowcount
+
+
 def reset_sync_task(conn: sqlite3.Connection, task_id: int) -> bool:
     """Reset a failed sync task back to queued for retry.
 

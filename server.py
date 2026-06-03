@@ -32,6 +32,8 @@ from db import (
     complete_sync_task,
     create_query_task,
     create_sync_task,
+    delete_query_tasks,
+    delete_sync_tasks,
     fail_sync_task,
     insert_logs,
     list_query_tasks,
@@ -879,9 +881,9 @@ def index():
     )
 
 
-@app.route("/api/query_tasks", methods=["GET", "POST"])
+@app.route("/api/query_tasks", methods=["GET", "POST", "DELETE"])
 def api_query_tasks():
-    """Create/list fetcher query tasks."""
+    """Create/list/delete fetcher query tasks."""
     if not session.get("user_id"):
         return jsonify({"error": "authentication required"}), 401
     if session.get("role") != "admin":
@@ -911,6 +913,26 @@ def api_query_tasks():
                 return jsonify({"error": "query task storage is not initialized yet"}), 503
             return jsonify({"ok": True, "task_id": task_id})
 
+        if request.method == "DELETE":
+            raw = request.args.get("status", "").strip()
+            if not raw:
+                return jsonify({"error": "status parameter required (comma-separated: completed,failed,queued,running)"}), 400
+            statuses = [s.strip() for s in raw.split(",") if s.strip()]
+            allowed = {"queued", "running", "completed", "failed"}
+            for s in statuses:
+                if s not in allowed:
+                    return jsonify({"error": f"invalid status {s!r}; allowed: {', '.join(sorted(allowed))}"}), 400
+            try:
+                deleted = delete_query_tasks(db, statuses)
+            except sqlite3.OperationalError as exc:
+                if "no such table: query_tasks" not in str(exc):
+                    raise
+                return jsonify({"error": "query task storage is not initialized yet"}), 503
+            LOG.info("Admin %r deleted %d query_tasks (status=%s) from %s",
+                     session.get("username"), deleted, raw, _client_ip())
+            return jsonify({"ok": True, "deleted": deleted,
+                            "stats": get_query_task_stats_safe(db)})
+
         status_filter = request.args.get("status", "").strip() or None
         return jsonify({
             "tasks": list_query_tasks_safe(db, limit=200, status=status_filter),
@@ -920,9 +942,9 @@ def api_query_tasks():
         db.close()
 
 
-@app.route("/api/sync_tasks", methods=["GET", "POST"])
+@app.route("/api/sync_tasks", methods=["GET", "POST", "DELETE"])
 def api_sync_tasks():
-    """Create/list database sync tasks."""
+    """Create/list/delete database sync tasks."""
     if not session.get("user_id"):
         return jsonify({"error": "authentication required"}), 401
     if session.get("role") != "admin":
@@ -945,6 +967,25 @@ def api_sync_tasks():
             task_id = create_sync_task(db, normalized)
             _ensure_sync_worker()
             return jsonify({"ok": True, "task_id": task_id, "remote_url": normalized})
+
+        if request.method == "DELETE":
+            raw = request.args.get("status", "").strip()
+            if not raw:
+                return jsonify({"error": "status parameter required (comma-separated: completed,failed,queued,running)"}), 400
+            statuses = [s.strip() for s in raw.split(",") if s.strip()]
+            allowed = {"queued", "running", "completed", "failed"}
+            for s in statuses:
+                if s not in allowed:
+                    return jsonify({"error": f"invalid status {s!r}; allowed: {', '.join(sorted(allowed))}"}), 400
+            try:
+                deleted = delete_sync_tasks(db, statuses)
+            except sqlite3.OperationalError as exc:
+                if "no such table: sync_tasks" not in str(exc):
+                    raise
+                return jsonify({"error": "sync task storage is not initialized yet"}), 503
+            LOG.info("Admin %r deleted %d sync_tasks (status=%s) from %s",
+                     session.get("username"), deleted, raw, _client_ip())
+            return jsonify({"ok": True, "deleted": deleted})
 
         return jsonify({"tasks": list_sync_tasks_safe(db)})
     finally:

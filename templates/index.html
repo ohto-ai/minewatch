@@ -541,7 +541,10 @@
     <div class="query-box">
       <div class="task-toggle-row">
         <span class="query-title">查询任务</span>
-        <button class="task-toggle-btn" id="toggle-task-view" type="button">显示全部</button>
+        <div>
+          <button class="task-toggle-btn" id="toggle-task-view" type="button">显示全部</button>
+          <button class="task-toggle-btn" id="cleanup-query-tasks" type="button" title="清除已完成和失败的任务">🗑 清理</button>
+        </div>
       </div>
       <!-- Progress bar -->
       {% set stats = query_task_stats or {} %}
@@ -593,7 +596,10 @@
       </div>
     </div>
     <div class="query-box" style="margin-top:12px;">
-      <div class="query-title">数据库同步</div>
+      <div class="task-toggle-row">
+        <span class="query-title">数据库同步</span>
+        <button class="task-toggle-btn" id="cleanup-sync-tasks" type="button" title="清除已完成和失败的同步任务">🗑 清理</button>
+      </div>
       <div class="query-create">
         <input id="sync-remote-url" type="text" placeholder="远端 Web 地址，例如 http://host:5000">
         <button id="sync-submit" type="button">开始同步</button>
@@ -967,6 +973,70 @@
     });
   }
 
+  // ── Cleanup completed/failed query tasks ──
+  async function cleanupQueryTasks() {
+    const btn = document.getElementById('cleanup-query-tasks');
+    if (!btn) return;
+    btn.disabled = true;
+    try {
+      const resp = await fetch('/api/query_tasks?status=completed,failed', { method: 'DELETE' });
+      if (resp.ok) {
+        const data = await resp.json();
+        statusEl.textContent = '已清理 ' + data.deleted + ' 个查询任务';
+        // Refresh the task list
+        const statusParam = showAllTasks ? '' : '?status=active';
+        const listResp = await fetch('/api/query_tasks' + statusParam);
+        if (listResp.ok) {
+          const listData = await listResp.json();
+          renderQueryTasks(listData.tasks || [], listData.stats || {});
+        }
+      } else {
+        const err = await resp.json().catch(function() { return {}; });
+        statusEl.textContent = '清理失败: ' + (err.error || 'HTTP ' + resp.status);
+      }
+    } catch (e) {
+      statusEl.textContent = '清理失败: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // ── Cleanup completed/failed sync tasks ──
+  async function cleanupSyncTasks() {
+    const btn = document.getElementById('cleanup-sync-tasks');
+    if (!btn) return;
+    btn.disabled = true;
+    try {
+      const resp = await fetch('/api/sync_tasks?status=completed,failed', { method: 'DELETE' });
+      if (resp.ok) {
+        const data = await resp.json();
+        statusEl.textContent = '已清理 ' + data.deleted + ' 个同步任务';
+        // Refresh the task list
+        const listResp = await fetch('/api/sync_tasks');
+        if (listResp.ok) {
+          const listData = await listResp.json();
+          renderSyncTasks(listData.tasks || []);
+        }
+      } else {
+        const err = await resp.json().catch(function() { return {}; });
+        statusEl.textContent = '清理失败: ' + (err.error || 'HTTP ' + resp.status);
+      }
+    } catch (e) {
+      statusEl.textContent = '清理失败: ' + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  const cleanupQueryBtn = document.getElementById('cleanup-query-tasks');
+  if (cleanupQueryBtn) {
+    cleanupQueryBtn.addEventListener('click', cleanupQueryTasks);
+  }
+  const cleanupSyncBtn = document.getElementById('cleanup-sync-tasks');
+  if (cleanupSyncBtn) {
+    cleanupSyncBtn.addEventListener('click', cleanupSyncTasks);
+  }
+
   window.addEventListener('beforeunload', function() {
     clearTimeout(pollTimer);
   });
@@ -1001,6 +1071,27 @@
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') hideCtxMenu();
   });
+
+  // ── Keyboard page navigation (Page Up / Page Down) ──
+  (function() {
+    var curPage = {{ page }};
+    var totalPages = {{ total_pages }};
+    var qsPrefix = {{ qs_prefix|tojson }};
+
+    document.addEventListener('keydown', function(e) {
+      // Don't navigate when focus is in a form control
+      var tag = document.activeElement && document.activeElement.tagName.toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+      if (e.key === 'PageDown' && curPage < totalPages) {
+        e.preventDefault();
+        window.location.href = '?page=' + (curPage + 1) + qsPrefix;
+      } else if (e.key === 'PageUp' && curPage > 1) {
+        e.preventDefault();
+        window.location.href = '?page=' + (curPage - 1) + qsPrefix;
+      }
+    });
+  })();
 
   ctxMenu.addEventListener('click', function(e) {
     const action = e.target.closest('[data-action]')?.dataset.action;
