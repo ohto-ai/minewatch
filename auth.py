@@ -3,6 +3,7 @@ JWT authentication — login and token management.
 """
 
 import json
+import threading
 import time
 from base64 import urlsafe_b64decode
 
@@ -11,6 +12,7 @@ import requests
 from config import LOGIN_URL, BASE_HEADERS, CREDENTIALS, TOKEN_EXPIRY_BUFFER
 
 _token_cache: str | None = None
+_token_lock = threading.Lock()
 
 
 def _decode_jwt_payload(token: str) -> dict:
@@ -52,9 +54,10 @@ def login() -> str:
 def get_token() -> str:
     """Return a valid token, re-logging in if necessary."""
     global _token_cache
-    if _token_cache is None or _token_expired(_token_cache):
-        _token_cache = login()
-    return _token_cache
+    with _token_lock:
+        if _token_cache is None or _token_expired(_token_cache):
+            _token_cache = login()
+        return _token_cache
 
 
 def get_auth_headers() -> dict:

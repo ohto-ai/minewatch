@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_logs_time ON logs(time);
+CREATE INDEX IF NOT EXISTS idx_logs_name ON logs(name);
 
 CREATE TABLE IF NOT EXISTS query_tasks (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -453,6 +454,21 @@ def fail_sync_task(conn: sqlite3.Connection, task_id: int, error: str) -> None:
             "finished_at = CURRENT_TIMESTAMP WHERE id = ?",
             (error[:500], task_id),
         )
+
+
+def reset_sync_task(conn: sqlite3.Connection, task_id: int) -> bool:
+    """Reset a failed sync task back to queued for retry.
+
+    Returns True if the task was reset, False if it wasn't in a resettable state.
+    """
+    with conn:
+        cur = conn.execute(
+            "UPDATE sync_tasks SET status = 'queued', fetched_count = 0, "
+            "inserted_count = 0, error = '', started_at = NULL, "
+            "finished_at = NULL WHERE id = ? AND status = 'failed'",
+            (task_id,),
+        )
+        return cur.rowcount == 1
 
 
 def list_sync_tasks(conn: sqlite3.Connection, limit: int = 20) -> list[dict]:

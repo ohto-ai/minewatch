@@ -36,6 +36,7 @@ from db import (
     insert_logs,
     list_query_tasks,
     list_sync_tasks,
+    reset_sync_task,
     get_query_task_stats,
     create_user, get_user_by_username, get_user_by_id,
     update_user_role, update_user_password, delete_user,
@@ -52,6 +53,11 @@ TZ = timezone(timedelta(hours=8))  # 北京时间
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
+app.config.update(
+    SESSION_COOKIE_SECURE=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',
+)
 
 VALID_ROLES = ("user", "admin", "xcon")
 _SYNC_WORKER: threading.Thread | None = None
@@ -536,6 +542,42 @@ def _highlight_player(msg: str) -> str:
         return f'<span class="player">{name}</span>' + msg[m.end(1):]
     return msg
 
+# ── Rate limiter ────────────────────────────────────────────────
+
+class RateLimiter:
+    """Simple in-memory rate limiter for login attempts per IP."""
+
+    def __init__(self, max_attempts: int = 5, window_seconds: int = 60):
+        self._max = max_attempts
+        self._window = window_seconds
+        self._attempts: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def _trim(self, key: str, now: float) -> None:
+        cutoff = now - self._window
+        if key in self._attempts:
+            self._attempts[key] = [t for t in self._attempts[key] if t > cutoff]
+            if not self._attempts[key]:
+                del self._attempts[key]
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.time()
+        with self._lock:
+            self._trim(key, now)
+            if len(self._attempts.get(key, [])) >= self._max:
+                return False
+            self._attempts.setdefault(key, []).append(now)
+            return True
+
+    def remaining(self, key: str) -> int:
+        now = time.time()
+        with self._lock:
+            self._trim(key, now)
+            return self._max - len(self._attempts.get(key, []))
+
+_login_limiter = RateLimiter(max_attempts=5, window_seconds=60)
+
+
 # ── Auth routes ────────────────────────────────────────────────
 
 XCON_LOGIN_URL = f"{BASE_URL}/api/login"
@@ -569,6 +611,16 @@ def login():
         if not _csrf_valid():
             LOG.warning("CSRF validation failed at /login from %s", _client_ip())
             return render_template("login.html", error="请求已失效，请刷新页面后重试"), 400
+
+        # Rate limiting per IP
+        client_ip = _client_ip()
+        if not _login_limiter.is_allowed(client_ip):
+            LOG.warning("Rate limit hit for /login from %s", client_ip)
+            return render_template(
+                "login.html",
+                error="登录尝试过于频繁，请等待一分钟后重试",
+            ), 429
+
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         db = get_db()
@@ -701,7 +753,7 @@ def index():
     role = session.get("role", "user")
     page        = request.args.get("page", 1, type=int)
     per_page    = request.args.get("per_page", min(PER_PAGE, 200), type=int)
-    per_page    = min(per_page, 200)
+    per_page    = max(1, min(per_page, 200))
     name_filter = request.args.get("name", "").strip()
     hide_trace  = request.args.get("hide_trace", "0") == "1"
     keyword     = request.args.get("keyword", "").strip()
@@ -899,13 +951,35 @@ def api_sync_tasks():
         db.close()
 
 
+@app.route("/api/sync_tasks/<int:task_id>/retry", methods=["POST"])
+def api_sync_task_retry(task_id: int):
+    """Reset a failed sync task back to queued for retry."""
+    if not session.get("user_id"):
+        return jsonify({"error": "authentication required"}), 401
+    if session.get("role") != "admin":
+        return jsonify({"error": "admin role required"}), 403
+
+    db = get_db()
+    try:
+        ok = reset_sync_task(db, task_id)
+        if ok:
+            LOG.info("Admin %r retried sync task #%d from %s",
+                     session.get("username"), task_id, _client_ip())
+            _ensure_sync_worker()
+            return jsonify({"ok": True, "task_id": task_id})
+        else:
+            return jsonify({"error": "task not found or not in failed state"}), 404
+    finally:
+        db.close()
+
+
 @app.route("/api/logs")
 @login_required
 def api_logs():
     """JSON endpoint for programmatic access."""
     page = request.args.get("page", 1, type=int)
     per_page = request.args.get("per_page", PER_PAGE, type=int)
-    per_page = min(per_page, 500)
+    per_page = max(1, min(per_page, 500))
 
     db = get_db()
     try:
@@ -936,7 +1010,9 @@ def api_logs_export():
         bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         token_ok = bool(token) and hmac.compare_digest(token, SYNC_SHARED_TOKEN)
         bearer_ok = bool(bearer) and hmac.compare_digest(bearer, SYNC_SHARED_TOKEN)
-        if SYNC_SHARED_TOKEN and not token_ok and not bearer_ok:
+        if not SYNC_SHARED_TOKEN:
+            return jsonify({"error": "sync token not configured on this server"}), 403
+        if not token_ok and not bearer_ok:
             return jsonify({"error": "authentication required"}), 401
 
     after_time = request.args.get("after_time", 0, type=int)
@@ -1026,8 +1102,10 @@ def api_poll():
     filter_where = (" AND ".join(filter_clauses)) if filter_clauses else ""
 
     # ── Combine cursor + filter for data query ──
-    cursor_clause = "(time >= ? AND id > ?)"
-    cursor_params = [since_time, since_id]
+    # Use (time > ? OR (time = ? AND id > ?)) so that entries inserted
+    # out-of-order by a sync task at the same timestamp are not missed.
+    cursor_clause = "(time > ? OR (time = ? AND id > ?))"
+    cursor_params = [since_time, since_time, since_id]
 
     data_where_parts = [cursor_clause]
     if filter_where:

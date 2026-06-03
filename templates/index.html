@@ -357,6 +357,18 @@
   }
   .task-toggle-btn:hover { color: var(--text); border-color: var(--accent); }
   .task-toggle-btn.active { color: var(--green); border-color: var(--accent); }
+  .sync-retry-btn {
+    font-size: 10px;
+    background: var(--bg);
+    color: var(--warn);
+    border: 1px solid var(--border);
+    padding: 1px 5px;
+    cursor: pointer;
+    border-radius: 3px;
+    margin-left: 4px;
+  }
+  .sync-retry-btn:hover { border-color: var(--warn); background: var(--hover-bg); }
+  .sync-retry-btn:disabled { opacity: 0.4; cursor: default; }
 
   @media (max-width: 1180px) {
     .page-shell {
@@ -591,6 +603,9 @@
         <span class="task-badge task-{{ t.status }}">
           #{{ t.id }} {{ t.remote_url }} ·
           {% if t.status == "queued" %}排队中{% elif t.status == "running" %}同步中{% elif t.status == "completed" %}已完成{% elif t.status == "failed" %}失败{% else %}排队中{% endif %}
+          {% if t.status == "failed" %}
+          <button class="sync-retry-btn" data-task-id="{{ t.id }}" title="重试此同步任务">↻ 重试</button>
+          {% endif %}
         </span>
         {% else %}
         <span>暂无同步任务</span>
@@ -789,8 +804,26 @@
       if (status === 'failed' && task.error) {
         text += ' (' + escapeHtml(task.error) + ')';
       }
-      return '<span class="task-badge task-' + status + '" title="' + text + '">' + text + '</span>';
+      let retryBtn = '';
+      if (status === 'failed') {
+        retryBtn = ' <button class="sync-retry-btn" data-task-id="' + task.id + '" title="重试此同步任务">↻ 重试</button>';
+      }
+      return '<span class="task-badge task-' + status + '" title="' + text + '">' + text + retryBtn + '</span>';
     }).join('');
+  }
+
+  async function retrySyncTask(taskId) {
+    try {
+      const resp = await fetch('/api/sync_tasks/' + taskId + '/retry', { method: 'POST' });
+      if (resp.ok) {
+        statusEl.textContent = '同步任务 #' + taskId + ' 已重新加入队列';
+      } else {
+        const err = await resp.json().catch(function() { return {}; });
+        statusEl.textContent = '重试失败: ' + (err.error || 'HTTP ' + resp.status);
+      }
+    } catch (e) {
+      statusEl.textContent = '重试失败: ' + e.message;
+    }
   }
 
   function escapeHtml(s) {
@@ -895,6 +928,17 @@
         e.preventDefault();
         createSyncTask();
       }
+    });
+  }
+
+  // Delegate click events for sync retry buttons
+  if (syncTasksEl) {
+    syncTasksEl.addEventListener('click', function(e) {
+      const btn = e.target.closest('.sync-retry-btn');
+      if (!btn) return;
+      btn.disabled = true;
+      const taskId = parseInt(btn.dataset.taskId);
+      if (taskId) retrySyncTask(taskId);
     });
   }
 
