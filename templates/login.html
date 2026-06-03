@@ -15,6 +15,7 @@
     --err:    #e04040;
     --green:  #50d050;
     --border: #333;
+    --glow:   rgba(80,208,80,0.06);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -23,12 +24,30 @@
     font-family: "Consolas", "Courier New", "Microsoft YaHei", monospace;
     font-size: 14px;
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
     min-height: 100vh;
-    gap: 0;
   }
+
+  /* ── Two-column container ─────────────────────── */
+  .container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 60px;
+    padding: 40px 32px;
+    max-width: 960px;
+    width: 100%;
+  }
+
+  /* ── Left column: login card + promo ────────── */
+  .left-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
   .card {
     background: var(--bg2);
     border: 1px solid var(--border);
@@ -46,6 +65,7 @@
     margin-bottom: 24px;
     text-align: center;
   }
+
   /* ── Server promotion ─────────────────────── */
   .promo {
     width: 340px;
@@ -96,7 +116,7 @@
   }
   .promo-address {
     font-size: 13px;
-    color: var(--cyan);
+    color: #3a8a3a;
     font-weight: bold;
     margin: 8px 0 12px;
     letter-spacing: 0.5px;
@@ -136,6 +156,8 @@
     font-size: 12px;
     color: var(--err);
   }
+
+  /* ── Form elements ──────────────────────────── */
   label {
     display: block;
     font-size: 12px;
@@ -175,47 +197,227 @@
     font-size: 12px;
     margin-bottom: 14px;
   }
+
+  /* ── Right column: 3D skin viewer ──────────── */
+  .right-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .skin-viewer {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .skin-canvas-wrap {
+    position: relative;
+    width: 280px;
+    height: 460px;
+    border-radius: 8px;
+    overflow: hidden;
+    /* subtle glow behind the model */
+    box-shadow:
+      0 0 80px var(--glow),
+      0 0 160px rgba(58,138,58,0.03);
+  }
+
+  #skin-canvas {
+    display: block;
+    width: 280px;
+    height: 460px;
+    background: radial-gradient(ellipse at 50% 60%, rgba(58,138,58,0.08) 0%, transparent 70%);
+  }
+
+  .skin-label {
+    margin-top: 14px;
+    font-size: 14px;
+    color: var(--green);
+    letter-spacing: 1px;
+    text-align: center;
+  }
+
+  .skin-label::before {
+    content: "▣ ";
+    font-size: 12px;
+  }
+
+  .skin-error {
+    display: none;
+    width: 280px;
+    height: 460px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 12px;
+    gap: 8px;
+  }
+  .skin-error.visible { display: flex; }
+
+  /* ── Responsive: stack on narrow screens ───── */
+  @media (max-width: 800px) {
+    .container {
+      flex-direction: column;
+      gap: 28px;
+      padding: 24px 16px;
+    }
+    .right-col { order: -1; }  /* model above form on mobile */
+    .skin-canvas-wrap {
+      width: 200px;
+      height: 340px;
+    }
+    #skin-canvas {
+      width: 200px;
+      height: 340px;
+    }
+    .skin-error {
+      width: 200px;
+      height: 340px;
+    }
+  }
 </style>
 </head>
 <body>
-<div class="card">
-  <div class="title">▣ MC Server Logs</div>
-  {% if error %}
-  <div class="error">{{ error }}</div>
-  {% endif %}
-  <form method="post">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="username">用户名</label>
-    <input id="username" type="text" name="username" autofocus autocomplete="username" required>
-    <label for="password">密码</label>
-    <input id="password" type="password" name="password" autocomplete="current-password" required>
-    <button type="submit">登 录</button>
-  </form>
-</div>
 
-{% if server_info %}
-<div class="promo">
-  <div class="promo-header">
-    {% if server_info.favicon %}
-    <img class="promo-icon" src="{{ server_info.favicon }}" alt="Server Icon" width="48" height="48">
-    {% else %}
-    <div class="promo-icon-placeholder">▣</div>
+<div class="container">
+  <!-- ── Left column: login form + server promo ── -->
+  <div class="left-col">
+    <div class="card">
+      <div class="title">▣ MC Server Logs</div>
+      {% if error %}
+      <div class="error">{{ error }}</div>
+      {% endif %}
+      <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label for="username">用户名</label>
+        <input id="username" type="text" name="username" autofocus autocomplete="username" required>
+        <label for="password">密码</label>
+        <input id="password" type="password" name="password" autocomplete="current-password" required>
+        <button type="submit">登 录</button>
+      </form>
+    </div>
+
+    {% if server_info %}
+    <div class="promo">
+      <div class="promo-header">
+        {% if server_info.favicon %}
+        <img class="promo-icon" src="{{ server_info.favicon }}" alt="Server Icon" width="48" height="48">
+        {% else %}
+        <div class="promo-icon-placeholder">▣</div>
+        {% endif %}
+        <div class="promo-motd">
+          {% for line in server_info.motd_lines %}
+          <div{% if loop.index > 1 %} class="motd-line2"{% endif %}>{{ line }}</div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="promo-address">{{ server_info.host }}</div>
+      <div class="promo-stats">
+        <span>🟢 <span class="stat-val{% if server_info.players_online > 0 %} stat-online{% else %} stat-empty{% endif %}">{{ server_info.players_online }}</span> / {{ server_info.players_max }} 在线</span>
+        <span>⏱ <span class="stat-val">{{ server_info.latency_ms }}ms</span></span>
+      </div>
+      <div class="promo-join">
+        在 Minecraft 中使用 <code>{{ server_info.host }}</code> 加入
+      </div>
+    </div>
     {% endif %}
-    <div class="promo-motd">
-      {% for line in server_info.motd_lines %}
-      <div{% if loop.index > 1 %} class="motd-line2"{% endif %}>{{ line }}</div>
-      {% endfor %}
+  </div>
+
+  <!-- ── Right column: 3D Minecraft character ── -->
+  <div class="right-col">
+    <div class="skin-viewer" id="skin-viewer">
+      <div class="skin-canvas-wrap">
+        <canvas id="skin-canvas"></canvas>
+      </div>
+      <div class="skin-error" id="skin-error">
+        <span>🖼</span>
+        <span>无法加载皮肤</span>
+      </div>
+      <div class="skin-label">{{ skin_username }}</div>
     </div>
   </div>
-  <div class="promo-address">{{ server_info.host }}</div>
-  <div class="promo-stats">
-    <span>🟢 <span class="stat-val{% if server_info.players_online > 0 %} stat-online{% else %} stat-empty{% endif %}">{{ server_info.players_online }}</span> / {{ server_info.players_max }} 在线</span>
-    <span>⏱ <span class="stat-val">{{ server_info.latency_ms }}ms</span></span>
-  </div>
-  <div class="promo-join">
-    在 Minecraft 中使用 <code>{{ server_info.host }}</code> 加入
-  </div>
 </div>
-{% endif %}
+
+<!-- ── Import map: Three.js + skinview3d (ES modules) ── -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/": "https://cdn.jsdelivr.net/npm/three@0.160.0/",
+    "skinview-utils": "https://cdn.jsdelivr.net/npm/skinview-utils@0.7.1/build/index.js",
+    "skinview3d": "https://cdn.jsdelivr.net/npm/skinview3d@3.4.2/libs/skinview3d.js"
+  }
+}
+</script>
+
+<script type="module">
+import { SkinViewer } from "skinview3d";
+
+(function () {
+  const canvas = document.getElementById("skin-canvas");
+  const errorEl = document.getElementById("skin-error");
+  const skinUsername = {{ skin_username | tojson }};
+
+  // ── Build skin proxy URL ──
+  const skinUrl = "/api/skin/" + encodeURIComponent(skinUsername);
+
+  // ── Create the skin viewer ──
+  let viewer;
+  try {
+    viewer = new SkinViewer({
+      canvas: canvas,
+      width: 280,
+      height: 460,
+      skin: skinUrl,
+    });
+  } catch (e) {
+    console.warn("skinview3d init failed:", e);
+    canvas.style.display = "none";
+    errorEl.classList.add("visible");
+    return;
+  }
+
+  // ── Handle skin load failure ──
+  const skinImg = new Image();
+  skinImg.onerror = function () {
+    console.warn("Failed to load skin for " + skinUsername);
+    canvas.style.display = "none";
+    errorEl.classList.add("visible");
+  };
+  skinImg.src = skinUrl;
+
+  // ── Handle skin load success — start animation ──
+  skinImg.onload = function () {
+    canvas.style.display = "block";
+    errorEl.classList.remove("visible");
+
+    // Gentle idle rotation around Y axis
+    function animate() {
+      requestAnimationFrame(animate);
+      // Rotate the player model slowly
+      viewer.playerObject.rotation.y += 0.004;
+      viewer.render();
+    }
+    animate();
+  };
+
+  // ── Handle window resize for responsive canvas ──
+  function handleResize() {
+    if (window.innerWidth <= 800) {
+      viewer.setSize(200, 340);
+    } else {
+      viewer.setSize(280, 460);
+    }
+  }
+  window.addEventListener("resize", handleResize);
+})();
+</script>
+
 </body>
 </html>

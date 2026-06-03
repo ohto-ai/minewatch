@@ -4,8 +4,10 @@ MC Log Viewer — Flask web server with MC chat-style rendering.
 Run separately from main.py:  python server.py
 """
 
+import base64
 import ipaddress
 import hmac
+import json
 import logging
 import os
 import re
@@ -27,7 +29,7 @@ try:
 except ImportError:
     _MCSTATUS_AVAILABLE = False
 from flask import (
-    Flask, render_template, request, jsonify,
+    Flask, Response, render_template, request, jsonify,
     session, redirect, url_for, flash,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -141,6 +143,100 @@ def get_mc_server_info() -> dict | None:
     return info
 
 app = Flask(__name__)
+
+# ── Minecraft skin proxy config ─────────────────────────────────
+MC_SKIN_USERNAME = os.environ.get("MC_SKIN_USERNAME", "ohtoai002")
+MC_SKIN_CACHE_TTL = 3600  # cache skin image for 1 hour (skins rarely change)
+_mc_skin_image_cache: dict[str, tuple[float, bytes]] = {}  # username → (timestamp, image_bytes)
+_mc_skin_url_cache: dict[str, tuple[float, str]] = {}      # username → (timestamp, texture_url)
+
+
+def _get_player_skin_url(username: str) -> str | None:
+    """Resolve a Minecraft username to its skin texture URL via Mojang API."""
+    # ── Step 1: username → UUID ──
+    try:
+        resp = requests.get(
+            f"https://api.mojang.com/users/profiles/minecraft/{username}",
+            timeout=10,
+        )
+        resp.raise_for_status()
+        uuid: str = resp.json()["id"]
+    except Exception:
+        LOG.warning("Failed to resolve UUID for Minecraft user %r", username)
+        return None
+
+    # ── Step 2: UUID → profile (includes base64-encoded textures) ──
+    try:
+        resp = requests.get(
+            f"https://sessionserver.mojang.com/session/minecraft/profile/{uuid}",
+            timeout=10,
+        )
+        resp.raise_for_status()
+        profile = resp.json()
+    except Exception:
+        LOG.warning("Failed to fetch profile for UUID %s", uuid)
+        return None
+
+    # ── Step 3: decode base64 textures JSON → skin URL ──
+    for prop in profile.get("properties", []):
+        if prop.get("name") == "textures":
+            try:
+                decoded = base64.b64decode(prop["value"])
+                textures = json.loads(decoded)
+                skin_url = textures.get("textures", {}).get("SKIN", {}).get("url")
+                if skin_url:
+                    return skin_url
+            except Exception:
+                pass
+
+    return None
+
+
+@app.route("/api/skin/<username>")
+def api_skin(username: str):
+    """Proxy endpoint that returns a Minecraft player's skin PNG.
+
+    Resolves username → UUID → texture URL via Mojang's API, fetches the
+    skin image from Mojang's texture CDN, and returns it with CORS headers
+    so skinview3d running in the browser can consume it without issues.
+    Results are cached in-memory for MC_SKIN_CACHE_TTL seconds.
+    """
+    now = time.time()
+
+    # ── Check image cache ──
+    cache_key = f"img:{username}"
+    if cache_key in _mc_skin_image_cache:
+        cached_time, cached_data = _mc_skin_image_cache[cache_key]
+        if (now - cached_time) < MC_SKIN_CACHE_TTL:
+            return Response(cached_data, mimetype="image/png")
+
+    # ── Resolve skin URL (with its own cache) ──
+    skin_url: str | None = None
+    url_cache_key = f"url:{username}"
+    if url_cache_key in _mc_skin_url_cache:
+        url_cached_time, url_cached = _mc_skin_url_cache[url_cache_key]
+        if (now - url_cached_time) < MC_SKIN_CACHE_TTL:
+            skin_url = url_cached
+
+    if skin_url is None:
+        skin_url = _get_player_skin_url(username)
+        if skin_url is None:
+            return jsonify({"error": f"skin not found for player {username!r}"}), 404
+        _mc_skin_url_cache[url_cache_key] = (now, skin_url)
+
+    # ── Fetch skin image from Mojang's texture CDN ──
+    try:
+        resp = requests.get(skin_url, timeout=15)
+        resp.raise_for_status()
+        skin_data = resp.content
+    except Exception:
+        LOG.warning("Failed to fetch skin image from %s", skin_url)
+        return jsonify({"error": "failed to fetch skin image"}), 502
+
+    # ── Cache and return ──
+    _mc_skin_image_cache[cache_key] = (now, skin_data)
+    return Response(skin_data, mimetype="image/png")
+
 app.secret_key = FLASK_SECRET_KEY
 app.config.update(
     SESSION_COOKIE_SECURE=True,
@@ -717,7 +813,7 @@ def login():
     if request.method == "POST":
         if not _csrf_valid():
             LOG.warning("CSRF validation failed at /login from %s", _client_ip())
-            return render_template("login.html", error="请求已失效，请刷新页面后重试"), 400
+            return render_template("login.html", skin_username=MC_SKIN_USERNAME, error="请求已失效，请刷新页面后重试"), 400
 
         # Rate limiting per IP
         client_ip = _client_ip()
@@ -741,21 +837,21 @@ def login():
                         LOG.warning("Login failed for xcon user %r (password=%r) from %s",
                                     username, password, _client_ip())
                         error = "XCon 认证失败，请检查用户名和密码"
-                        return render_template("login.html", error=error)
+                        return render_template("login.html", skin_username=MC_SKIN_USERNAME, error=error)
                 else:
                     # Normal users — check local password hash
                     if not check_password_hash(user["password_hash"], password):
                         LOG.warning("Login failed for user %r (password=%r) from %s",
                                     username, password, _client_ip())
                         error = "用户名或密码错误"
-                        return render_template("login.html", error=error)
+                        return render_template("login.html", skin_username=MC_SKIN_USERNAME, error=error)
             else:
                 # ── User not found locally — try xcon auto-registration ──
                 if not xcon_authenticate(username, password):
                     LOG.warning("Login failed for unknown user %r (password=%r) from %s",
                                 username, password, _client_ip())
                     error = "用户名或密码错误"
-                    return render_template("login.html", error=error)
+                    return render_template("login.html", skin_username=MC_SKIN_USERNAME, error=error)
                 # xcon auth succeeded — auto-create a local xcon user
                 try:
                     create_user(db, username, "",
@@ -768,7 +864,7 @@ def login():
                     user = get_user_by_username(db, username)
                     if user is None:
                         error = "用户创建失败，请重试"
-                        return render_template("login.html", error=error)
+                        return render_template("login.html", skin_username=MC_SKIN_USERNAME, error=error)
                 else:
                     user = get_user_by_username(db, username)
 
@@ -784,7 +880,7 @@ def login():
             return redirect(next_url)
         finally:
             db.close()
-    return render_template("login.html", error=error)
+    return render_template("login.html", skin_username=MC_SKIN_USERNAME, error=error)
 
 
 @app.route("/setup", methods=["GET", "POST"])
