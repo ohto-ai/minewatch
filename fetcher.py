@@ -12,7 +12,7 @@ from config import LOG_URL, LOG_REFERER, QUERY_TASK_STEP_INTERVAL
 from auth import get_auth_headers
 from db import (
     insert_logs, count_logs, get_latest_time, claim_next_query_task,
-    complete_query_task, fail_query_task, has_queued_query_task,
+    complete_query_task, ensure_query_task, fail_query_task, has_queued_query_task,
 )
 from schedule import get_interval, describe
 
@@ -22,6 +22,7 @@ ESC = "\x1b"
 # Regex to strip Minecraft ANSI CSI sequences: ESC[ <params> <letter>
 _ANSI_CSI = re.compile(ESC + r"\[[0-9;]*[a-zA-Z]")
 _ANSI_LINE_CLEAR = re.compile(ESC + r"\[K")
+_MINUTE_KEYWORD = re.compile(r"^\d{2}:\d{2}$")
 
 
 def clean_log(raw: str) -> str:
@@ -53,6 +54,22 @@ def fetch_logs(session: requests.Session, search: str = "") -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def expand_second_query_tasks(conn: sqlite3.Connection, keyword: str, fetched_count: int) -> tuple[int, int]:
+    """Queue second-level tasks when a minute keyword hits the remote 100-log cap."""
+    if fetched_count < 100 or not _MINUTE_KEYWORD.fullmatch(keyword):
+        return 0, 0
+
+    created = 0
+    reused = 0
+    for second in range(60):
+        _, is_new = ensure_query_task(conn, f"{keyword}:{second:02d}")
+        if is_new:
+            created += 1
+        else:
+            reused += 1
+    return created, reused
+
+
 def process_one_query_task(conn: sqlite3.Connection, session: requests.Session) -> bool:
     """Process one queued query task, if available."""
     task = claim_next_query_task(conn)
@@ -67,9 +84,15 @@ def process_one_query_task(conn: sqlite3.Connection, session: requests.Session) 
         for entry in entries:
             entry["log"] = clean_log(entry["log"])
         inserted_count, _ = insert_logs(conn, entries, since_time=0)
+        second_created, second_reused = expand_second_query_tasks(conn, keyword, len(entries))
         complete_query_task(conn, task_id, fetched_count=len(entries),
                             inserted_count=inserted_count)
         print(f"[task#{task_id}] completed fetched={len(entries)} inserted={inserted_count}")
+        if second_created or second_reused:
+            print(
+                f"[task#{task_id}] refined to seconds "
+                f"created={second_created} reused={second_reused}"
+            )
     except Exception as e:
         fail_query_task(conn, task_id, str(e))
         print(f"[task#{task_id}] failed: {e}")
