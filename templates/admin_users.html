@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>用户管理 — MC Server Logs</title>
+<style>
+  :root {
+    --bg:       #1a1a1a;
+    --bg2:      #252525;
+    --text:     #d0d0d0;
+    --muted:    #6a6a6a;
+    --accent:   #3a8a3a;
+    --warn:     #e0a000;
+    --err:      #e04040;
+    --green:    #50d050;
+    --border:   #333;
+    --hover-bg: #2d2d2d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Consolas", "Courier New", "Microsoft YaHei", monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    min-height: 100vh;
+  }
+  .topbar {
+    background: var(--bg2);
+    border-bottom: 2px solid var(--accent);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  .topbar .title {
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--green);
+    letter-spacing: 1px;
+    text-shadow: 0 0 8px rgba(80,208,80,0.3);
+  }
+  .topbar a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 12px;
+  }
+  .topbar a:hover { color: var(--text); }
+  .spacer { flex: 1; }
+  .user-info { color: var(--muted); font-size: 12px; }
+
+  .content {
+    max-width: 900px;
+    margin: 24px auto;
+    padding: 0 16px;
+  }
+  h2 {
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--muted);
+    margin-bottom: 12px;
+    letter-spacing: 0.5px;
+  }
+
+  /* Flash messages */
+  .flash {
+    padding: 8px 12px;
+    margin-bottom: 14px;
+    font-size: 12px;
+    border-radius: 2px;
+  }
+  .flash-success {
+    background: rgba(58,138,58,0.15);
+    border: 1px solid rgba(58,138,58,0.4);
+    color: var(--green);
+  }
+  .flash-error {
+    background: rgba(224,64,64,0.12);
+    border: 1px solid rgba(224,64,64,0.4);
+    color: var(--err);
+  }
+
+  /* User table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-bottom: 28px;
+  }
+  th {
+    background: var(--bg2);
+    color: var(--muted);
+    text-align: left;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    font-weight: normal;
+    letter-spacing: 0.3px;
+  }
+  td {
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+  }
+  tr:hover td { background: var(--hover-bg); }
+
+  .badge-admin { color: var(--warn); font-weight: bold; }
+  .badge-user  { color: var(--green); }
+
+  /* Inline forms */
+  .row-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .row-actions form {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  select, input[type="text"], input[type="password"] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 3px 7px;
+    font: inherit;
+    font-size: 12px;
+    outline: none;
+  }
+  select:focus, input:focus { border-color: var(--accent); }
+  .btn {
+    background: var(--bg2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 3px 10px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .btn:hover { border-color: var(--accent); background: var(--hover-bg); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-primary:hover { filter: brightness(1.15); }
+  .btn-danger { border-color: rgba(224,64,64,0.6); color: var(--err); }
+  .btn-danger:hover { background: rgba(224,64,64,0.12); border-color: var(--err); }
+
+  /* Create user form */
+  .create-form {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    padding: 16px 18px;
+    margin-bottom: 28px;
+  }
+  .create-form .fields {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .create-form input[type="text"],
+  .create-form input[type="password"] {
+    padding: 5px 9px;
+  }
+  .flabel { color: var(--muted); font-size: 12px; white-space: nowrap; }
+</style>
+</head>
+<body>
+
+<!-- ── Top bar ──────────────────────────────── -->
+<div class="topbar">
+  <span class="title">▣ MC Server Logs</span>
+  <a href="/">← 日志主页</a>
+  <span class="spacer"></span>
+  <span class="user-info">{{ current_username }} ({{ current_role }})</span>
+  <a href="/logout">退出登录</a>
+</div>
+
+<div class="content">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+    <div class="flash flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <!-- ── Create user ────────────────────────── -->
+  <h2>创建新用户</h2>
+  <div class="create-form">
+    <form method="post" action="/admin/users/create">
+      <div class="fields">
+        <span class="flabel">用户名</span>
+        <input type="text" name="username" placeholder="username" required maxlength="64" style="width:140px;">
+        <span class="flabel">密码</span>
+        <input type="password" name="password" placeholder="≥ 6 位" required minlength="6" style="width:130px;">
+        <span class="flabel">角色</span>
+        <select name="role">
+          {% for r in valid_roles %}
+          <option value="{{ r }}" {% if r == 'user' %}selected{% endif %}>{{ r }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="btn btn-primary">创建用户</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ── User list ──────────────────────────── -->
+  <h2>用户列表</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>用户名</th>
+        <th>角色</th>
+        <th>创建时间</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <td>{{ u.id }}</td>
+        <td>{{ u.username }}</td>
+        <td>
+          <span class="badge-{{ u.role }}">{{ u.role }}</span>
+        </td>
+        <td>{{ u.created_at or '—' }}</td>
+        <td>
+          <div class="row-actions">
+            <!-- Change role -->
+            <form method="post" action="/admin/users/{{ u.id }}/role">
+              <select name="role">
+                {% for r in valid_roles %}
+                <option value="{{ r }}" {% if r == u.role %}selected{% endif %}>{{ r }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit" class="btn">修改角色</button>
+            </form>
+            <!-- Change password -->
+            <form method="post" action="/admin/users/{{ u.id }}/password">
+              <input type="password" name="password" placeholder="新密码(≥6位)" minlength="6" required style="width:120px;">
+              <button type="submit" class="btn">修改密码</button>
+            </form>
+            <!-- Delete -->
+            {% if u.username != current_username %}
+            <form method="post" action="/admin/users/{{ u.id }}/delete"
+                  onsubmit="return confirm('确认删除用户 {{ u.username }}？');">
+              <button type="submit" class="btn btn-danger">删除</button>
+            </form>
+            {% endif %}
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px;">暂无用户</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+</div>
+</body>
+</html>

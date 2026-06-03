@@ -376,6 +376,12 @@
 
   <span class="meta">共 {{ total }} 条 &nbsp;|&nbsp; 更新于 {{ last_update }}</span>
   <button onclick="location.reload()">↻ 刷新</button>
+  <span class="spacer"></span>
+  {% if current_role == 'admin' %}
+  <a href="/admin/users" style="color:var(--muted);font-size:12px;text-decoration:none;">用户管理</a>
+  {% endif %}
+  <span style="color:var(--muted);font-size:12px;">{{ current_username }}</span>
+  <a href="/logout" style="color:var(--muted);font-size:12px;text-decoration:none;">退出</a>
 </div>
 
 <div class="page-shell">
@@ -425,10 +431,14 @@
   <aside class="side-col">
     <div class="query-box">
       <div class="query-title">查询任务</div>
+      {% if current_role in ('user', 'admin') %}
       <div class="query-create">
         <input id="query-keyword" type="text" placeholder="输入关键词后提交到 fetcher 队列">
         <button id="query-submit" type="button">创建任务</button>
       </div>
+      {% else %}
+      <div style="font-size:11px;color:var(--muted);padding:2px 0 4px;">（普通用户可发起查询任务）</div>
+      {% endif %}
       <div class="query-tasks" id="query-tasks">
         {% for t in query_tasks %}
         <span class="task-badge task-{{ t.status }}">
@@ -459,6 +469,7 @@
   const queryTasksEl = document.getElementById('query-tasks');
   const queryInputEl = document.getElementById('query-keyword');
   const querySubmitEl = document.getElementById('query-submit');
+  const canCreateTask = {{ 'true' if current_role in ('user', 'admin') else 'false' }};
 
   // Cursor: (maxTime, maxId) — only fetch rows with time >= maxTime AND id > maxId
   let maxTime = parseInt(logArea.dataset.maxTime) || 0;
@@ -476,6 +487,11 @@
   async function poll() {
     try {
       const resp = await fetch(buildPollUrl());
+      if (resp.status === 401) {
+        statusEl.textContent = '会话已过期，请刷新页面重新登录';
+        clearTimeout(pollTimer);
+        return;
+      }
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       const data = await resp.json();
 
@@ -589,10 +605,10 @@
 
   // Start first poll after interval
   pollTimer = setTimeout(poll, POLL_INTERVAL);
-  if (querySubmitEl) {
+  if (canCreateTask && querySubmitEl) {
     querySubmitEl.addEventListener('click', createQueryTask);
   }
-  if (queryInputEl) {
+  if (canCreateTask && queryInputEl) {
     queryInputEl.addEventListener('keydown', function(e) {
       if (e.key === 'Enter') {
         e.preventDefault();
