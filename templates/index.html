@@ -238,7 +238,12 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    min-width: 320px;
+    min-width: 300px;
+    max-width: 380px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 4px;
   }
   .query-create {
     display: flex;
@@ -257,15 +262,20 @@
     font-size: 11px;
     color: var(--muted);
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 94px;
+    overflow-y: auto;
+    padding-right: 2px;
   }
   .task-badge {
     border: 1px solid var(--border);
     background: var(--bg);
-    padding: 1px 6px;
-    border-radius: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .task-queued { color: #9a9a9a; }
   .task-running { color: var(--gold); }
@@ -486,7 +496,7 @@
       if (status === 'failed' && task.error) {
         text += ' (' + escapeHtml(task.error) + ')';
       }
-      return '<span class="task-badge task-' + status + '">' + text + '</span>';
+      return '<span class="task-badge task-' + status + '" title="' + text + '">' + text + '</span>';
     }).join('');
   }
 

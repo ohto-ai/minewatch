@@ -8,7 +8,7 @@ import sqlite3
 
 import requests
 
-from config import LOG_URL, LOG_REFERER
+from config import LOG_URL, LOG_REFERER, QUERY_TASK_STEP_INTERVAL
 from auth import get_auth_headers
 from db import (
     insert_logs, count_logs, get_latest_time, claim_next_query_task,
@@ -49,14 +49,15 @@ def fetch_logs(session: requests.Session, search: str = "") -> list[dict]:
     )
     resp.raise_for_status()
     body = resp.json()
-    return body.get("data", [])
+    data = body.get("data")
+    return data if isinstance(data, list) else []
 
 
-def process_one_query_task(conn: sqlite3.Connection, session: requests.Session) -> None:
+def process_one_query_task(conn: sqlite3.Connection, session: requests.Session) -> bool:
     """Process one queued query task, if available."""
     task = claim_next_query_task(conn)
     if not task:
-        return
+        return False
 
     task_id, keyword = task
     print(f"[task#{task_id}] running keyword={keyword!r}")
@@ -72,6 +73,19 @@ def process_one_query_task(conn: sqlite3.Connection, session: requests.Session) 
     except Exception as e:
         fail_query_task(conn, task_id, str(e))
         print(f"[task#{task_id}] failed: {e}")
+    return True
+
+
+def process_queued_query_tasks(
+    conn: sqlite3.Connection, session: requests.Session, task_interval: float
+) -> int:
+    """Process queued query tasks one by one with a small delay between tasks."""
+    processed = 0
+    while process_one_query_task(conn, session):
+        processed += 1
+        if task_interval > 0:
+            _time.sleep(task_interval)
+    return processed
 
 
 def poll_loop(conn: sqlite3.Connection) -> None:
@@ -107,13 +121,13 @@ def poll_loop(conn: sqlite3.Connection) -> None:
                     preview = latest[:90] + "..." if len(latest) > 90 else latest
                     print(f"[+{new_count:>3}] total={total_stored:<8} | {preview}")
 
-                process_one_query_task(conn, session)
-
                 # Dynamic interval — may change across time boundaries
                 interval = get_interval()
                 if interval != prev_interval:
                     print(f"[sch] 时段切换 → {describe()}")
                     prev_interval = interval
+                task_interval = min(max(QUERY_TASK_STEP_INTERVAL, 0.0), float(interval))
+                process_queued_query_tasks(conn, session, task_interval)
 
                 # Sleep precisely, accounting for request latency
                 elapsed = _time.monotonic() - loop_start

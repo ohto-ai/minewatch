@@ -51,6 +51,7 @@ CREDENTIALS = {
 
 DB_PATH = "logs.db"
 POLL_INTERVAL = 3.0
+QUERY_TASK_STEP_INTERVAL = float(os.getenv("MC_QUERY_TASK_STEP_INTERVAL", "1"))
 
 # JWT expiry buffer (seconds) — re-login this many seconds before token expires
 TOKEN_EXPIRY_BUFFER = 60
