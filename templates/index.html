@@ -380,6 +380,45 @@
     font-size: 11px;
     border-top: 1px solid var(--border);
   }
+
+  /* ── Context menu ─────────────────────────── */
+  .ctx-menu {
+    display: none;
+    position: fixed;
+    background: #2a2a2a;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 0;
+    min-width: 160px;
+    z-index: 9999;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  }
+  .ctx-menu.show { display: block; }
+  .ctx-menu-item {
+    display: block;
+    width: 100%;
+    padding: 7px 16px;
+    border: none;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .ctx-menu-item:hover {
+    background: var(--accent);
+    color: #000;
+  }
+
+  /* ── Jump-to highlight animation ─────────── */
+  .line.highlight {
+    animation: highlight-fade 2s ease-out;
+  }
+  @keyframes highlight-fade {
+    0%   { background: rgba(0, 200, 100, 0.35); }
+    100% { background: transparent; }
+  }
 </style>
 <!-- auto-refresh handled by JS polling -->
 </head>
@@ -568,6 +607,12 @@
   <a href="/api/logs" style="color:var(--muted);">API</a> &nbsp;·&nbsp;
   <a href="/api/stats" style="color:var(--muted);">统计</a>
 </footer>
+
+<!-- ── Context menu ─────────────────────────── -->
+<div class="ctx-menu" id="ctx-menu">
+  <button class="ctx-menu-item" data-action="nearby">📋 查看附近消息</button>
+  <button class="ctx-menu-item" data-action="copy">📝 复制消息文本</button>
+</div>
 
 <script>
 (function() {
@@ -881,6 +926,66 @@
   window.addEventListener('beforeunload', function() {
     clearTimeout(pollTimer);
   });
+
+  // ── Context menu (right-click on log line) ──
+  const ctxMenu = document.getElementById('ctx-menu');
+  let ctxTarget = null;
+
+  logArea.addEventListener('contextmenu', function(e) {
+    const line = e.target.closest('.line');
+    if (!line) return;
+    e.preventDefault();
+    ctxTarget = line;
+    ctxMenu.classList.add('show');
+    ctxMenu.style.left = e.clientX + 'px';
+    ctxMenu.style.top = e.clientY + 'px';
+    // Keep menu within viewport
+    const mr = ctxMenu.getBoundingClientRect();
+    if (mr.right > window.innerWidth) ctxMenu.style.left = (e.clientX - mr.width) + 'px';
+    if (mr.bottom > window.innerHeight) ctxMenu.style.top = (e.clientY - mr.height) + 'px';
+  });
+
+  function hideCtxMenu() {
+    ctxMenu.classList.remove('show');
+    ctxTarget = null;
+  }
+
+  document.addEventListener('click', function(e) {
+    if (!ctxMenu.contains(e.target)) hideCtxMenu();
+  });
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') hideCtxMenu();
+  });
+
+  ctxMenu.addEventListener('click', function(e) {
+    const action = e.target.closest('[data-action]')?.dataset.action;
+    if (!action || !ctxTarget) return;
+
+    if (action === 'nearby') {
+      const msgId = ctxTarget.dataset.id;
+      // Jump with only around=<id> — strip filters so user sees unfiltered context
+      window.location.href = '/?around=' + msgId;
+    } else if (action === 'copy') {
+      const msgEl = ctxTarget.querySelector('.msg');
+      if (msgEl) {
+        navigator.clipboard.writeText(msgEl.textContent).catch(function() {});
+      }
+    }
+    hideCtxMenu();
+  });
+
+  // ── Highlight target message after jump-to ──
+  (function() {
+    const highlightId = {{ highlight_id | default(0) }};
+    if (highlightId > 0) {
+      const target = document.querySelector('.line[data-id="' + highlightId + '"]');
+      if (target) {
+        target.classList.add('highlight');
+        target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      }
+    }
+  })();
 })();
 </script>
 

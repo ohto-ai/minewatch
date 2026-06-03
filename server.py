@@ -695,6 +695,8 @@ def index():
     keyword     = request.args.get("keyword", "").strip()
     from_ts     = _parse_datetime(request.args.get("from", ""))
     to_ts       = _parse_datetime(request.args.get("to", ""))
+    around_id   = request.args.get("around", 0, type=int)
+    highlight_id = 0
 
     # ── Build WHERE clause ──
     clauses: list[str] = []
@@ -723,6 +725,25 @@ def index():
     db = get_db()
     try:
         total = db.execute(count_sql, params).fetchone()[0]
+
+        # ── Calculate page for around_id (jump-to-message) ──
+        if around_id > 0:
+            target = db.execute(
+                "SELECT time FROM logs WHERE id = ?", [around_id]
+            ).fetchone()
+            if target:
+                target_time = target["time"]
+                pos_params = params + [target_time, target_time, around_id]
+                extra_clause = "(time > ? OR (time = ? AND id >= ?))"
+                if where_sql:
+                    pos_sql = f"SELECT COUNT(*) FROM logs {where_sql} AND {extra_clause}"
+                else:
+                    pos_sql = f"SELECT COUNT(*) FROM logs WHERE {extra_clause}"
+                pos = db.execute(pos_sql, pos_params).fetchone()[0]
+                # pos is 1-indexed position of the target row (COUNT includes itself)
+                if pos > 0:
+                    page = (pos + per_page - 1) // per_page
+                    highlight_id = around_id
 
         total_pages = max(1, (total + per_page - 1) // per_page)
         page = max(1, min(page, total_pages))
@@ -787,6 +808,7 @@ def index():
         now_ts=int(time.time()),
         query_tasks=query_tasks,
         query_task_stats=query_task_stats,
+        highlight_id=highlight_id,
         current_role=role,
         current_username=session.get("username", ""),
         sync_tasks=sync_tasks,
