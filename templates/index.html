@@ -228,6 +228,31 @@
     display: flex; align-items: center; gap: 3px; user-select: none;
   }
   .cb input { cursor: pointer; accent-color: var(--accent); }
+
+  /* ── 标签列表（可滚动，防止过多标签撑爆布局） ── */
+  .tag-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px 6px;
+    max-height: 80px;
+    overflow-y: auto;
+    padding: 4px 6px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .tag-list .cb { font-size: 11px; white-space: nowrap; }
+  .tag-toggle {
+    font-size: 11px;
+    color: var(--accent);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .tag-toggle:hover { color: var(--green); }
+
   .filters input[type="text"],
   .filters input[type="datetime-local"] {
     background: var(--bg);
@@ -500,6 +525,8 @@
         <option value="whitelist" {% if tag_mode == 'whitelist' %}selected{% endif %}>白名单模式</option>
         <option value="blacklist" {% if tag_mode == 'blacklist' %}selected{% endif %}>黑名单模式</option>
       </select>
+      <span class="tag-toggle" onclick="var cbs=document.querySelectorAll('.tag-list input[name=tag]');var all=Array.from(cbs).every(c=>c.checked);cbs.forEach(c=>c.checked=!all);document.getElementById('filters').submit()">全选/取消</span>
+      <div class="tag-list">
       {% for cat in all_categories %}
       <label class="cb" title="分类: {{ cat }}">
         <input type="checkbox" name="tag" value="{{ cat }}"
@@ -508,6 +535,7 @@
         {{ cat }}
       </label>
       {% endfor %}
+      </div>
     </div>
     {% endif %}
   </form>
