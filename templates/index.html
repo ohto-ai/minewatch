@@ -702,13 +702,14 @@
           );
           logArea.insertBefore(fragment, logArea.firstChild);
 
-          // Remove n oldest lines from bottom to keep exactly perPage rows
-          const count = data.count;
-          for (let i = 0; i < count && logArea.children.length > perPage; i++) {
-            logArea.removeChild(logArea.lastChild);
+          // Remove oldest lines from bottom to keep exactly perPage rows
+          while (logArea.children.length > perPage) {
+            const last = logArea.lastElementChild;
+            if (last) logArea.removeChild(last);
+            else break;
           }
 
-          statusEl.textContent = '实时监听中 (15s) — +' + count + ' 条新消息';
+          statusEl.textContent = '实时监听中 (15s) — +' + data.count + ' 条新消息';
           setTimeout(function() { statusEl.textContent = '实时监听中 (15s)'; }, 3000);
         }
         // Non-page-1: no DOM insertion, cursor-only update (already done above)
