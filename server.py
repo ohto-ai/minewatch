@@ -863,15 +863,25 @@ def check_xcon_permission(username: str, password: str) -> str:
         )
         if log_resp.status_code == 200:
             log_body = log_resp.json()
-            if isinstance(log_body, dict) and log_body.get("code") == 0:
+            LOG.debug("XCon permission probe for %r: status=200, body_keys=%s",
+                      username, list(log_body.keys()) if isinstance(log_body, dict) else type(log_body).__name__)
+            # The log API returns {"total": N, "data": [...]} on success
+            # (no "code" field, unlike the login API).
+            if isinstance(log_body, dict) and isinstance(log_body.get("data"), list):
+                LOG.info("XCon permission probe for %r: full access granted (got %d log entries)",
+                         username, len(log_body["data"]))
                 return "full"
+            LOG.info("XCon permission probe for %r: restricted (body missing 'data' list, got keys=%s)",
+                     username, list(log_body.keys()) if isinstance(log_body, dict) else "non-dict")
 
+        LOG.info("XCon permission probe for %r: restricted (log API returned status=%s)",
+                 username, log_resp.status_code)
         return "restricted"
-    except requests.RequestException:
-        LOG.warning("XCon permission check failed for user %r", username)
+    except requests.RequestException as e:
+        LOG.warning("XCon permission check failed for user %r: %s", username, e)
         return "restricted"
-    except Exception:
-        LOG.warning("Unexpected error in xcon permission check for %r", username)
+    except Exception as e:
+        LOG.warning("Unexpected error in xcon permission check for %r: %s", username, e)
         return "restricted"
 
 
