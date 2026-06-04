@@ -53,10 +53,12 @@ from db import (
     update_xcon_level,
     list_users, count_admins,
     load_compiled_tag_rules, categorize_log_text,
+    get_all_matching_categories,
     create_tag_rule, update_tag_rule, delete_tag_rule,
     get_tag_rule, list_tag_rules, backfill_all_categories,
     get_role_permission, upsert_role_permission,
     delete_role_permission, list_role_permissions,
+    list_distinct_categories,
 )
 from config import FLASK_SECRET_KEY, SYNC_SHARED_TOKEN, BASE_URL
 
@@ -322,12 +324,24 @@ def _client_ip() -> str:
     return request.remote_addr or "0.0.0.0"
 
 # ── DB helpers ─────────────────────────────────────────────────
+def _regexp(pattern: str, value: str | None) -> bool:
+    """SQLite REGEXP callback.  Returns True when *pattern* (a Python
+    regex) matches *value*.  Invalid patterns silently return False."""
+    if value is None:
+        return False
+    try:
+        return re.search(pattern, value) is not None
+    except re.error:
+        return False
+
+
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
     _migrate(conn)
+    conn.create_function("regexp", 2, _regexp)
     return conn
 
 
@@ -507,6 +521,28 @@ def _apply_role_permission_filter(clauses: list[str], params: list,
         # Empty blacklist → everything visible (no filter needed)
 
 
+def _apply_user_tag_filter(clauses: list[str], params: list) -> None:
+    """Apply user-selected tag filter from query parameters.
+
+    Reads ``tag_mode`` (whitelist / blacklist) and ``tag`` (multi-value
+    category list) from the request.  Modifies *clauses* and *params*
+    in-place.
+    """
+    tag_mode = request.args.get("tag_mode", "").strip()
+    tag_cats = [t.strip() for t in request.args.getlist("tag") if t.strip()]
+
+    if not tag_mode or not tag_cats:
+        return
+
+    if tag_mode == "whitelist":
+        placeholders = ",".join("?" * len(tag_cats))
+        clauses.append(f"category IN ({placeholders})")
+        params.extend(tag_cats)
+    elif tag_mode == "blacklist":
+        placeholders = ",".join("?" * len(tag_cats))
+        clauses.append(f"(category NOT IN ({placeholders}) OR category = '')")
+        params.extend(tag_cats)
+    # Unknown mode is treated as "off" (no filter)
 
 
 def login_required(f):
@@ -761,10 +797,14 @@ def _srv_hue(name: str) -> int:
     return _SRV_SEEN[name]
 
 
-def fmt_log_line(log: str, name: str, epoch_ms: int, row_id: int = 0) -> str:
+def fmt_log_line(log: str, name: str, epoch_ms: int, row_id: int = 0,
+                 all_cats: list[str] | None = None) -> str:
     """Convert a cleaned log line to MC-styled HTML.
 
     Layout:  [server]  MM-DD HH:MM:SS  LEVEL  message
+
+    If *all_cats* is provided, a ``title`` attribute with all matching
+    tag categories is added to the line so they appear on hover.
     """
     m = RE_HEAD.match(log) or RE_HEAD_ALT.match(log)
 
@@ -779,6 +819,11 @@ def fmt_log_line(log: str, name: str, epoch_ms: int, row_id: int = 0) -> str:
     hue = _srv_hue(name)
     badge = f'<span class="srv" style="--h:{hue}">{srv}</span>'
 
+    # ── Category tooltip ──
+    cat_title = ""
+    if all_cats:
+        cat_title = f' title="标签: {_esc(", ".join(all_cats))}"'
+
     if m:
         # ── Standard log line with header ──
         lvl = m.group(2)
@@ -792,7 +837,7 @@ def fmt_log_line(log: str, name: str, epoch_ms: int, row_id: int = 0) -> str:
 
         line_cls = "line-err" if lvl == "ERROR" else ""
         return (
-            f'<div class="line {line_cls}" data-id="{row_id}">'
+            f'<div class="line {line_cls}" data-id="{row_id}"{cat_title}>'
             f'{badge}'
             f'<span class="dt">{dt_str}</span>'
             f'<span class="{css_cls}">{lvl}</span>'
@@ -804,7 +849,7 @@ def fmt_log_line(log: str, name: str, epoch_ms: int, row_id: int = 0) -> str:
         log_esc = _esc(log)
         trace_cls = "trace-err" if RE_TRACE.search(log_esc) else "trace"
         return (
-            f'<div class="line {trace_cls}" data-id="{row_id}">'
+            f'<div class="line {trace_cls}" data-id="{row_id}"{cat_title}>'
             f'{badge}'
             f'<span class="dt">{dt_str}</span>'
             f'<span class="lvl-none">---</span>'
@@ -1132,9 +1177,12 @@ def index():
     name_filter = request.args.get("name", "").strip()
     hide_trace  = request.args.get("hide_trace", "0") == "1"
     keyword     = request.args.get("keyword", "").strip()
+    regex_mode  = request.args.get("regex", "0") == "1"
     from_ts     = _parse_datetime(request.args.get("from", ""))
     to_ts       = _parse_datetime(request.args.get("to", ""))
     around_id   = request.args.get("around", 0, type=int)
+    tag_mode    = request.args.get("tag_mode", "").strip()
+    tag_cats    = [t.strip() for t in request.args.getlist("tag") if t.strip()]
     highlight_id = 0
 
     # ── Build WHERE clause ──
@@ -1148,8 +1196,12 @@ def index():
         # 只保留带 [HH:MM:SS LEVEL]: 头的标准日志行
         clauses.append("log LIKE '%]:%'")
     if keyword:
-        clauses.append("log LIKE ?")
-        params.append(f"%{keyword}%")
+        if regex_mode:
+            clauses.append("log REGEXP ?")
+            params.append(keyword)
+        else:
+            clauses.append("log LIKE ?")
+            params.append(f"%{keyword}%")
     if from_ts is not None:
         clauses.append("time >= ?")
         params.append(from_ts)
@@ -1159,6 +1211,7 @@ def index():
 
     db = get_db()
     _apply_role_permission_filter(clauses, params, db)
+    _apply_user_tag_filter(clauses, params)
 
     where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     count_sql = f"SELECT COUNT(*) FROM logs {where_sql}"
@@ -1190,7 +1243,14 @@ def index():
         offset = (page - 1) * per_page
 
         rows = db.execute(data_sql, [*params, per_page, offset]).fetchall()
-        lines = [fmt_log_line(r["log"], r["name"], r["time"], r["id"]) for r in rows]
+        compiled_rules = load_compiled_tag_rules(db)
+        lines = [
+            fmt_log_line(
+                r["log"], r["name"], r["time"], r["id"],
+                get_all_matching_categories(r["log"], compiled_rules),
+            )
+            for r in rows
+        ]
         # Cursor is (max_time, max_id) so poll can do time >= ? AND id > ?
         max_time = rows[0]["time"] if rows else 0
         max_id   = rows[0]["id"]   if rows else 0
@@ -1198,6 +1258,8 @@ def index():
         servers = [r[0] for r in db.execute(
             "SELECT DISTINCT name FROM logs ORDER BY name"
         ).fetchall()]
+
+        all_categories = list_distinct_categories(db)
 
         latest = db.execute("SELECT MAX(time) FROM logs").fetchone()[0]
         last_update = (
@@ -1224,6 +1286,9 @@ def index():
     if from_ts is not None: qs_parts.append(f"from={request.args.get('from', '')}")
     if to_ts is not None:   qs_parts.append(f"to={request.args.get('to', '')}")
     if per_page != PER_PAGE: qs_parts.append(f"per_page={per_page}")
+    if tag_mode:            qs_parts.append(f"tag_mode={tag_mode}")
+    for c in tag_cats:      qs_parts.append(f"tag={c}")
+    if regex_mode:          qs_parts.append("regex=1")
     qs_base = "&".join(qs_parts)
     qs_prefix = f"&{qs_base}" if qs_base else ""
 
@@ -1238,9 +1303,13 @@ def index():
         name_filter=name_filter,
         hide_trace=hide_trace,
         keyword=keyword,
+        regex_mode=regex_mode,
         from_val=request.args.get("from", ""),
         to_val=request.args.get("to", ""),
         servers=servers,
+        all_categories=all_categories,
+        tag_mode=tag_mode,
+        tag_cats=tag_cats,
         last_update=last_update,
         qs_prefix=qs_prefix,
         max_time=max_time,
@@ -1403,6 +1472,7 @@ def api_logs():
     db = get_db()
     try:
         _apply_role_permission_filter(clauses, params, db)
+        _apply_user_tag_filter(clauses, params)
         where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         total = db.execute(
             f"SELECT COUNT(*) FROM logs {where_sql}", params
@@ -1475,6 +1545,7 @@ def api_stats():
     db = get_db()
     try:
         _apply_role_permission_filter(clauses, params, db)
+        _apply_user_tag_filter(clauses, params)
         where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         total = db.execute(
             f"SELECT COUNT(*) FROM logs {where_sql}", params
@@ -1512,6 +1583,7 @@ def api_poll():
     name_filter = request.args.get("name", "").strip()
     hide_trace  = request.args.get("hide_trace", "0") == "1"
     keyword     = request.args.get("keyword", "").strip()
+    regex_mode  = request.args.get("regex", "0") == "1"
     from_ts     = _parse_datetime(request.args.get("from", ""))
     to_ts       = _parse_datetime(request.args.get("to", ""))
 
@@ -1525,8 +1597,12 @@ def api_poll():
     if hide_trace:
         filter_clauses.append("log LIKE '%]:%'")
     if keyword:
-        filter_clauses.append("log LIKE ?")
-        filter_params.append(f"%{keyword}%")
+        if regex_mode:
+            filter_clauses.append("log REGEXP ?")
+            filter_params.append(keyword)
+        else:
+            filter_clauses.append("log LIKE ?")
+            filter_params.append(f"%{keyword}%")
     if from_ts is not None:
         filter_clauses.append("time >= ?")
         filter_params.append(from_ts)
@@ -1536,6 +1612,7 @@ def api_poll():
 
     db = get_db()
     _apply_role_permission_filter(filter_clauses, filter_params, db)
+    _apply_user_tag_filter(filter_clauses, filter_params)
 
     filter_where = (" AND ".join(filter_clauses)) if filter_clauses else ""
 
@@ -1558,8 +1635,14 @@ def api_poll():
             all_params
         ).fetchall()
 
-        lines_html = [fmt_log_line(r["log"], r["name"], r["time"], r["id"])
-                      for r in rows]
+        compiled_rules = load_compiled_tag_rules(db)
+        lines_html = [
+            fmt_log_line(
+                r["log"], r["name"], r["time"], r["id"],
+                get_all_matching_categories(r["log"], compiled_rules),
+            )
+            for r in rows
+        ]
 
         if rows:
             new_max_time = rows[0]["time"]

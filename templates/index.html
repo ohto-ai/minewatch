@@ -241,6 +241,14 @@
     outline: none;
     border-color: var(--accent);
   }
+  .filters input.regex-active {
+    border-color: #c060d0;
+    background: #1e1a24;
+    font-family: "Consolas", "Courier New", monospace;
+  }
+  .filters input.regex-active:focus {
+    border-color: #d080e0;
+  }
   .btn-apply, .btn-reset {
     background: var(--bg2);
     color: var(--text);
@@ -457,8 +465,16 @@
         <option value="200" {% if per_page==200 %}selected{% endif %}>200条/页</option>
       </select>
 
-      <input type="text" name="keyword" placeholder="关键词搜索…"
-             value="{{ keyword }}" style="width:140px;">
+      <input type="text" name="keyword" id="keyword-input" placeholder="关键词搜索…"
+             value="{{ keyword }}" style="width:140px;"
+             class="{% if regex_mode %}regex-active{% endif %}">
+
+      <label class="cb" title="使用正则表达式匹配（Python re 语法）">
+        <input type="checkbox" name="regex" value="1"
+               {% if regex_mode %}checked{% endif %}
+               onchange="var kw=document.getElementById('keyword-input');kw.classList.toggle('regex-active',this.checked);this.form.submit()">
+        正则
+      </label>
 
       <label class="cb" title="只显示带 [HH:MM:SS LEVEL]: 头的标准日志，隐藏堆栈报错行">
         <input type="checkbox" name="hide_trace" value="1"
@@ -476,6 +492,24 @@
       <button type="submit" class="btn-apply">筛选</button>
       <a href="/" class="btn-reset">清除</a>
     </div>
+    {% if all_categories %}
+    <div class="filter-row">
+      <span class="flabel">标签:</span>
+      <select name="tag_mode" onchange="this.form.submit()">
+        <option value="">不过滤</option>
+        <option value="whitelist" {% if tag_mode == 'whitelist' %}selected{% endif %}>白名单模式</option>
+        <option value="blacklist" {% if tag_mode == 'blacklist' %}selected{% endif %}>黑名单模式</option>
+      </select>
+      {% for cat in all_categories %}
+      <label class="cb" title="分类: {{ cat }}">
+        <input type="checkbox" name="tag" value="{{ cat }}"
+               {% if cat in tag_cats %}checked{% endif %}
+               onchange="this.form.submit()">
+        {{ cat }}
+      </label>
+      {% endfor %}
+    </div>
+    {% endif %}
   </form>
 
   <span class="meta">共 {{ total }} 条 &nbsp;|&nbsp; 更新于 {{ last_update }}</span>

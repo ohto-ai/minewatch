@@ -599,6 +599,26 @@ def load_compiled_tag_rules(
     return rules
 
 
+def list_distinct_categories(conn: sqlite3.Connection) -> list[str]:
+    """Return all non-empty category values currently present in the logs table."""
+    rows = conn.execute(
+        "SELECT DISTINCT category FROM logs WHERE category != '' ORDER BY category"
+    ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def get_all_matching_categories(
+    log_text: str,
+    compiled_rules: list[tuple[re.Pattern, str]],
+) -> list[str]:
+    """Return ALL matching categories for a log line (not just the first).
+
+    Unlike :func:`categorize_log_text` which returns only the highest-
+    priority match, this returns every category whose pattern matches.
+    """
+    return [category for pattern, category in compiled_rules if pattern.search(log_text)]
+
+
 def categorize_log_text(
     log_text: str,
     compiled_rules: list[tuple[re.Pattern, str]],
