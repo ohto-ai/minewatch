@@ -107,6 +107,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def init_db(path: str | Path = "logs.db") -> sqlite3.Connection:
     """Initialise the database and return a connection."""
     conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
     _migrate(conn)

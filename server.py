@@ -19,7 +19,7 @@ from functools import wraps
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 
@@ -1280,14 +1280,14 @@ def index():
 
     # ── Build query-string suffix for pagination links ──
     qs_parts = []
-    if name_filter:   qs_parts.append(f"name={name_filter}")
+    if name_filter:   qs_parts.append(f"name={quote(name_filter)}")
     if hide_trace:    qs_parts.append("hide_trace=1")
-    if keyword:       qs_parts.append(f"keyword={keyword}")
-    if from_ts is not None: qs_parts.append(f"from={request.args.get('from', '')}")
-    if to_ts is not None:   qs_parts.append(f"to={request.args.get('to', '')}")
+    if keyword:       qs_parts.append(f"keyword={quote(keyword)}")
+    if from_ts is not None: qs_parts.append(f"from={quote(request.args.get('from', ''))}")
+    if to_ts is not None:   qs_parts.append(f"to={quote(request.args.get('to', ''))}")
     if per_page != PER_PAGE: qs_parts.append(f"per_page={per_page}")
-    if tag_mode:            qs_parts.append(f"tag_mode={tag_mode}")
-    for c in tag_cats:      qs_parts.append(f"tag={c}")
+    if tag_mode:            qs_parts.append(f"tag_mode={quote(tag_mode)}")
+    for c in tag_cats:      qs_parts.append(f"tag={quote(c)}")
     if regex_mode:          qs_parts.append("regex=1")
     qs_base = "&".join(qs_parts)
     qs_prefix = f"&{qs_base}" if qs_base else ""
