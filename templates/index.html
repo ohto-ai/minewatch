@@ -657,6 +657,10 @@
   let failCount = 0;
   let shouldPoll = true;
   let showAllTasks = false;  // false = active only, true = show all
+  const urlParams = new URLSearchParams(window.location.search);
+  const currentPage = parseInt(urlParams.get('page')) || 1;
+  const perPage = parseInt(urlParams.get('per_page')) || 50;
+  const isFirstPage = currentPage === 1;
 
   function buildPollUrl() {
     const params = new URLSearchParams(window.location.search);
@@ -685,25 +689,34 @@
       }
 
       if (data.lines_html && data.lines_html.length > 0) {
-        // Prepend new lines (they come newest-first from server)
-        const fragment = document.createRange().createContextualFragment(
-          data.lines_html.join('')
-        );
-        logArea.insertBefore(fragment, logArea.firstChild);
+        // Always advance cursor regardless of current page
         maxTime = data.max_time;
         maxId   = data.max_id;
         logArea.dataset.maxTime = maxTime;
         logArea.dataset.maxId   = maxId;
-        statusEl.textContent = '实时监听中 (15s) — +' + data.count + ' 条新消息';
-        setTimeout(function() { statusEl.textContent = '实时监听中 (15s)'; }, 3000);
+
+        if (isFirstPage) {
+          // Prepend n new lines at top
+          const fragment = document.createRange().createContextualFragment(
+            data.lines_html.join('')
+          );
+          logArea.insertBefore(fragment, logArea.firstChild);
+
+          // Remove n oldest lines from bottom to keep exactly perPage rows
+          const count = data.count;
+          for (let i = 0; i < count && logArea.children.length > perPage; i++) {
+            logArea.removeChild(logArea.lastChild);
+          }
+
+          statusEl.textContent = '实时监听中 (15s) — +' + count + ' 条新消息';
+          setTimeout(function() { statusEl.textContent = '实时监听中 (15s)'; }, 3000);
+        }
+        // Non-page-1: no DOM insertion, cursor-only update (already done above)
       }
+
+      // Always render task panels (even without new log lines)
       renderQueryTasks(data.query_tasks || [], data.query_task_stats || {});
       renderSyncTasks(data.sync_tasks || []);
-
-      // Trim old lines to keep DOM at most 500
-      while (logArea.children.length > 500) {
-        logArea.removeChild(logArea.lastChild);
-      }
     } catch (e) {
       failCount++;
       if (failCount <= 3) {

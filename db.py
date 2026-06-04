@@ -59,8 +59,8 @@ ON sync_tasks(status, id);
 '''
 
 INSERT_SQL = '''
-INSERT OR IGNORE INTO logs (log, name, time, "using")
-VALUES (:log, :name, :time, :using)
+INSERT OR IGNORE INTO logs (log, name, time, "using", category)
+VALUES (:log, :name, :time, :using, :category)
 '''
 
 
@@ -69,6 +69,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Migration: add password_plain column (added 2025-06 for xcon role support)
     try:
         conn.execute("ALTER TABLE users ADD COLUMN password_plain TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
+    # Migration: add category column for log classification (added 2026-06)
+    try:
+        conn.execute("ALTER TABLE logs ADD COLUMN category TEXT NOT NULL DEFAULT ''")
     except sqlite3.OperationalError:
         pass  # column already exists
 
@@ -106,6 +112,7 @@ def insert_logs(conn: sqlite3.Connection, entries: list[dict],
                 "name": entry["name"],
                 "time": t,
                 "using": entry.get("using", ""),
+                "category": entry.get("category", ""),
             })
             if cursor.rowcount:
                 inserted += 1

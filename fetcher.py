@@ -41,6 +41,16 @@ def clean_log(raw: str) -> str:
     return text.strip()
 
 
+def categorize_log(log_text: str) -> str:
+    """Classify a cleaned log line into a category based on content markers.
+
+    Returns a category string (e.g. 'server_chat') or empty string for general logs.
+    """
+    if '[ServerChat]' in log_text:
+        return 'server_chat'
+    return ''
+
+
 def fetch_logs(session: requests.Session, search: str = "") -> list[dict]:
     """
     Fetch the latest 100 log entries from the API.
@@ -91,6 +101,7 @@ def process_one_query_task(conn: sqlite3.Connection, session: requests.Session) 
         entries = fetch_logs(session, search=keyword)
         for entry in entries:
             entry["log"] = clean_log(entry["log"])
+            entry["category"] = categorize_log(entry["log"])
         inserted_count, _ = insert_logs(conn, entries, since_time=0)
         second_created, second_reused = expand_second_query_tasks(conn, keyword, len(entries))
         complete_query_task(conn, task_id, fetched_count=len(entries),
@@ -198,6 +209,7 @@ def poll_loop(conn: sqlite3.Connection) -> None:
                 # Clean ANSI codes from each log line
                 for entry in entries:
                     entry["log"] = clean_log(entry["log"])
+                    entry["category"] = categorize_log(entry["log"])
 
                 new_count, watermark = insert_logs(conn, entries,
                                                     since_time=watermark)

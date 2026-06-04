@@ -402,6 +402,10 @@ def _refresh_authenticated_session() -> None:
     session["role"] = user["role"]
     session["_auth_refreshed_at"] = now
 
+    # Clean up stale xcon_permission when role changes away from xcon
+    if user["role"] != "xcon":
+        session.pop("xcon_permission", None)
+
 
 def _csrf_token() -> str:
     token = session.get("_csrf_token", "")
@@ -429,6 +433,21 @@ def _csrf_valid() -> bool:
     provided = request.form.get("csrf_token", "")
     return bool(expected and provided and hmac.compare_digest(expected, provided))
 
+
+def _apply_xcon_filter(clauses: list[str], params: list) -> None:
+    """Append category filter for restricted xcon users.
+
+    Modifies *clauses* and *params* in-place when the current session
+    belongs to an xcon user whose permission was downgraded to
+    ``"restricted"`` (i.e. the xcon log API rejected them).
+
+    Does nothing for non-xcon users or xcon users with full access.
+    """
+    if session.get("role", "") != "xcon":
+        return
+    if session.get("xcon_permission", "") == "restricted":
+        clauses.append("category = ?")
+        params.append("server_chat")
 
 
 
@@ -805,6 +824,57 @@ def xcon_authenticate(username: str, password: str) -> bool:
         return False
 
 
+def check_xcon_permission(username: str, password: str) -> str:
+    """Check xcon user's log access by probing the log API.
+
+    Uses the user's own credentials to authenticate against xcon, then
+    attempts to fetch logs.  Returns ``"full"`` if the log API responds
+    successfully, ``"restricted"`` otherwise (fail-closed).
+    """
+    LOG_URL = f"{BASE_URL}/api/gpm/process/log"
+    try:
+        # Step 1: login as the user to obtain a JWT token
+        login_resp = requests.post(
+            XCON_LOGIN_URL,
+            json={"username": username, "password": password},
+            headers={"User-Agent": "Minewatch/1.0"},
+            timeout=10,
+        )
+        login_resp.raise_for_status()
+        login_body = login_resp.json()
+
+        if not isinstance(login_body, dict) or login_body.get("code") != 0:
+            return "restricted"
+
+        token = login_body.get("data", {}).get("token", "")
+        if not token:
+            return "restricted"
+
+        # Step 2: probe the log endpoint with this user's token
+        log_resp = requests.get(
+            LOG_URL,
+            params={"log": ""},
+            headers={
+                "Authorization": token,
+                "User-Agent": "Minewatch/1.0",
+                "Referer": f"{BASE_URL}/manager/gpm",
+            },
+            timeout=10,
+        )
+        if log_resp.status_code == 200:
+            log_body = log_resp.json()
+            if isinstance(log_body, dict) and log_body.get("code") == 0:
+                return "full"
+
+        return "restricted"
+    except requests.RequestException:
+        LOG.warning("XCon permission check failed for user %r", username)
+        return "restricted"
+    except Exception:
+        LOG.warning("Unexpected error in xcon permission check for %r", username)
+        return "restricted"
+
+
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if session.get("user_id"):
@@ -875,6 +945,16 @@ def login():
             session["user_id"] = user["id"]
             session["username"] = user["username"]
             session["role"] = user["role"]
+
+            # Check xcon user's log access permission
+            if user["role"] == "xcon":
+                permission = check_xcon_permission(username, password)
+                session["xcon_permission"] = permission
+                LOG.info("XCon user %r login, permission=%s from %s",
+                         username, permission, _client_ip())
+            else:
+                session.pop("xcon_permission", None)
+
             LOG.info("Login succeeded for user %r (role=%s) from %s",
                      username, user["role"], _client_ip())
             return redirect(next_url)
@@ -984,6 +1064,8 @@ def index():
     if to_ts is not None:
         clauses.append("time <= ?")
         params.append(to_ts)
+
+    _apply_xcon_filter(clauses, params)
 
     where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     count_sql = f"SELECT COUNT(*) FROM logs {where_sql}"
@@ -1223,14 +1305,22 @@ def api_logs():
     per_page = request.args.get("per_page", PER_PAGE, type=int)
     per_page = max(1, min(per_page, 500))
 
+    # Apply xcon permission filter
+    clauses: list[str] = []
+    params: list = []
+    _apply_xcon_filter(clauses, params)
+    where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
     db = get_db()
     try:
-        total = db.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+        total = db.execute(
+            f"SELECT COUNT(*) FROM logs {where_sql}", params
+        ).fetchone()[0]
         offset = (page - 1) * per_page
         rows = db.execute(
-            "SELECT log, name, time FROM logs "
+            f"SELECT log, name, time FROM logs {where_sql} "
             "ORDER BY time DESC LIMIT ? OFFSET ?",
-            (per_page, offset)
+            [*params, per_page, offset]
         ).fetchall()
     finally:
         db.close()
@@ -1287,13 +1377,25 @@ def api_logs_export():
 @login_required
 def api_stats():
     """Quick stats endpoint."""
+    # Apply xcon permission filter
+    clauses: list[str] = []
+    params: list = []
+    _apply_xcon_filter(clauses, params)
+    where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
     db = get_db()
     try:
-        total = db.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
-        latest = db.execute("SELECT MAX(time) FROM logs").fetchone()[0]
+        total = db.execute(
+            f"SELECT COUNT(*) FROM logs {where_sql}", params
+        ).fetchone()[0]
+        latest = db.execute(
+            f"SELECT MAX(time) FROM logs {where_sql}", params
+        ).fetchone()[0]
         per_server = [
             dict(r) for r in db.execute(
-                "SELECT name, COUNT(*) as cnt FROM logs GROUP BY name ORDER BY cnt DESC"
+                f"SELECT name, COUNT(*) as cnt FROM logs {where_sql} "
+                "GROUP BY name ORDER BY cnt DESC",
+                params
             ).fetchall()
         ]
     finally:
@@ -1340,6 +1442,8 @@ def api_poll():
     if to_ts is not None:
         filter_clauses.append("time <= ?")
         filter_params.append(to_ts)
+
+    _apply_xcon_filter(filter_clauses, filter_params)
 
     filter_where = (" AND ".join(filter_clauses)) if filter_clauses else ""
 
