@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>标签规则管理 — MC Server Logs</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<style>
+  :root {
+    --bg:       #1a1a1a;
+    --bg2:      #252525;
+    --text:     #d0d0d0;
+    --muted:    #6a6a6a;
+    --accent:   #3a8a3a;
+    --warn:     #e0a000;
+    --err:      #e04040;
+    --green:    #50d050;
+    --border:   #333;
+    --hover-bg: #2d2d2d;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Consolas", "Courier New", "Microsoft YaHei", monospace;
+    font-size: 13px;
+    line-height: 1.65;
+    min-height: 100vh;
+  }
+  .topbar {
+    background: var(--bg2);
+    border-bottom: 2px solid var(--accent);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    position: sticky; top: 0; z-index: 10;
+  }
+  .topbar .title {
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--green);
+    letter-spacing: 1px;
+    text-shadow: 0 0 8px rgba(80,208,80,0.3);
+  }
+  .topbar a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 12px;
+  }
+  .topbar a:hover { color: var(--text); }
+  .spacer { flex: 1; }
+  .user-info { color: var(--muted); font-size: 12px; }
+
+  .content {
+    max-width: 1050px;
+    margin: 24px auto;
+    padding: 0 16px;
+  }
+  h2 {
+    font-size: 14px;
+    font-weight: bold;
+    color: var(--muted);
+    margin-bottom: 12px;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  /* Flash messages */
+  .flash {
+    padding: 8px 12px;
+    margin-bottom: 14px;
+    font-size: 12px;
+    border-radius: 2px;
+  }
+  .flash-success {
+    background: rgba(58,138,58,0.15);
+    border: 1px solid rgba(58,138,58,0.4);
+    color: var(--green);
+  }
+  .flash-error {
+    background: rgba(224,64,64,0.12);
+    border: 1px solid rgba(224,64,64,0.4);
+    color: var(--err);
+  }
+
+  /* Table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    margin-bottom: 28px;
+  }
+  th {
+    background: var(--bg2);
+    color: var(--muted);
+    text-align: left;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border);
+    font-weight: normal;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+  }
+  td {
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+  }
+  tr:hover td { background: var(--hover-bg); }
+
+  /* Inline forms */
+  .row-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .row-actions form {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+  }
+  select, input[type="text"], input[type="number"] {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 3px 7px;
+    font: inherit;
+    font-size: 12px;
+    outline: none;
+  }
+  select:focus, input:focus { border-color: var(--accent); }
+  input[type="text"] { width: 120px; }
+  input[type="number"] { width: 50px; }
+  .btn {
+    background: var(--bg2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 3px 10px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); background: var(--hover-bg); }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-primary:hover { filter: brightness(1.15); }
+  .btn-danger { border-color: rgba(224,64,64,0.6); color: var(--err); }
+  .btn-danger:hover { background: rgba(224,64,64,0.12); border-color: var(--err); }
+  .btn-warn { border-color: rgba(224,160,0,0.6); color: var(--warn); }
+  .btn-warn:hover { background: rgba(224,160,0,0.12); border-color: var(--warn); }
+
+  /* Create form */
+  .create-form {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    padding: 16px 18px;
+    margin-bottom: 28px;
+  }
+  .create-form .fields {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .create-form input[type="text"] { padding: 5px 9px; }
+  .create-form input[type="number"] { padding: 5px 9px; width: 60px; }
+  .flabel { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+  /* Regex pattern display */
+  .pattern-display {
+    font-family: "Consolas", "Courier New", monospace;
+    color: var(--warn);
+    word-break: break-all;
+  }
+  .category-badge {
+    display: inline-block;
+    background: rgba(58,138,58,0.2);
+    color: var(--green);
+    padding: 1px 8px;
+    border-radius: 2px;
+    font-size: 11px;
+  }
+  .enabled-yes { color: var(--green); }
+  .enabled-no  { color: var(--err); }
+</style>
+</head>
+<body>
+
+<!-- ── Top bar ──────────────────────────────── -->
+<div class="topbar">
+  <span class="title">▣ MC Server Logs</span>
+  <a href="/">← 日志主页</a>
+  <a href="/admin/users">用户管理</a>
+  <span class="spacer"></span>
+  <span class="user-info">{{ current_username }} ({{ current_role }})</span>
+  <form method="post" action="/logout" style="display:inline;margin:0;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="btn" style="padding:2px 8px;">退出登录</button>
+  </form>
+</div>
+
+<div class="content">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+    <div class="flash flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  <!-- ── Create rule ─────────────────────────── -->
+  <h2>
+    创建新规则
+    <span style="font-size:11px;color:var(--muted);font-weight:normal;">
+      正则匹配日志内容 → 自动打上标签（优先级越高越先匹配）
+    </span>
+  </h2>
+  <div class="create-form">
+    <form method="post" action="/admin/tag_rules/create">
+      <div class="fields">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <span class="flabel">正则表达式</span>
+        <input type="text" name="pattern" placeholder="如 \[ServerChat\]" required style="width:180px;">
+        <span class="flabel">标签名</span>
+        <input type="text" name="category" placeholder="如 server_chat" required style="width:140px;">
+        <span class="flabel">优先级</span>
+        <input type="number" name="priority" value="0" min="0" max="99">
+        <span class="flabel">描述</span>
+        <input type="text" name="description" placeholder="可选" style="width:160px;">
+        <button type="submit" class="btn btn-primary">创建规则</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- ── Rule list ───────────────────────────── -->
+  <h2>
+    标签规则列表
+    <form method="post" action="/admin/tag_rules/apply" style="display:inline;margin-left:auto;">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button type="submit" class="btn btn-warn"
+              onclick="return confirm('确认重新应用所有标签规则？\n此操作将重新扫描数据库中所有日志，可能需要一些时间。')">
+        重新应用所有规则
+      </button>
+    </form>
+  </h2>
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>正则表达式</th>
+        <th>标签名</th>
+        <th>优先级</th>
+        <th>描述</th>
+        <th>启用</th>
+        <th>创建时间</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rules %}
+      <tr>
+        <td>{{ r.id }}</td>
+        <td><span class="pattern-display">{{ r.pattern }}</span></td>
+        <td><span class="category-badge">{{ r.category }}</span></td>
+        <td>{{ r.priority }}</td>
+        <td style="color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ r.description }}">{{ r.description or '—' }}</td>
+        <td>
+          {% if r.enabled %}
+          <span class="enabled-yes">✓</span>
+          {% else %}
+          <span class="enabled-no">✗</span>
+          {% endif %}
+        </td>
+        <td style="color:var(--muted);font-size:11px;">{{ r.created_at or '—' }}</td>
+        <td>
+          <div class="row-actions">
+            <!-- Update form -->
+            <form method="post" action="/admin/tag_rules/{{ r.id }}/update">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="text" name="pattern" value="{{ r.pattern }}" required style="width:140px;" title="正则表达式">
+              <input type="text" name="category" value="{{ r.category }}" required style="width:100px;" title="标签名">
+              <input type="number" name="priority" value="{{ r.priority }}" min="0" max="99" style="width:45px;" title="优先级">
+              <input type="text" name="description" value="{{ r.description or '' }}" style="width:100px;" title="描述">
+              <label title="启用" style="display:flex;align-items:center;gap:2px;color:var(--muted);font-size:11px;">
+                <input type="checkbox" name="enabled" value="1" {% if r.enabled %}checked{% endif %}>
+                启用
+              </label>
+              <button type="submit" class="btn">更新</button>
+            </form>
+            <!-- Delete -->
+            <form method="post" action="/admin/tag_rules/{{ r.id }}/delete"
+                  onsubmit="return confirm('确认删除规则 #{{ r.id }}？\n{{ r.pattern }} → {{ r.category }}');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-danger">删除</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" style="text-align:center;color:var(--muted);padding:20px;">暂无标签规则，创建一条开始使用</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+</div>
+</body>
+</html>

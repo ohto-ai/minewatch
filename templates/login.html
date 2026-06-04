@@ -305,6 +305,10 @@
         <input id="password" type="password" name="password" autocomplete="current-password" required>
         <button type="submit">登 录</button>
       </form>
+      <form method="post" action="/visitor" style="margin-top:12px;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button type="submit" style="width:100%;background:transparent;border:1px solid var(--border);color:var(--muted);padding:12px;font:inherit;font-size:14px;cursor:pointer;letter-spacing:1px;">游客进入</button>
+      </form>
     </div>
 
     {% if server_info %}

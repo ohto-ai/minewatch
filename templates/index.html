@@ -483,14 +483,19 @@
   <span class="spacer"></span>
   {% if current_role == 'admin' %}
   <a href="/admin/users" style="color:var(--muted);font-size:12px;text-decoration:none;">用户管理</a>
+  <a href="/admin/tag_rules" style="color:var(--muted);font-size:12px;text-decoration:none;">标签规则</a>
   {% endif %}
   <span style="color:var(--muted);font-size:12px;">{{ current_username }}</span>
+  {% if current_role == 'visitor' %}
+  <a href="/login" style="color:var(--accent);font-size:12px;text-decoration:none;">登录</a>
+  {% else %}
   <form method="post" action="/logout" style="display:inline;margin:0;">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" style="background:none;border:none;color:var(--muted);font-size:12px;text-decoration:none;cursor:pointer;padding:0;">
       退出
     </button>
   </form>
+  {% endif %}
 </div>
 
 <div class="page-shell">

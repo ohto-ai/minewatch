@@ -50,7 +50,13 @@ from db import (
     get_query_task_stats,
     create_user, get_user_by_username, get_user_by_id,
     update_user_role, update_user_password, delete_user,
+    update_xcon_level,
     list_users, count_admins,
+    load_compiled_tag_rules, categorize_log_text,
+    create_tag_rule, update_tag_rule, delete_tag_rule,
+    get_tag_rule, list_tag_rules, backfill_all_categories,
+    get_role_permission, upsert_role_permission,
+    delete_role_permission, list_role_permissions,
 )
 from config import FLASK_SECRET_KEY, SYNC_SHARED_TOKEN, BASE_URL
 
@@ -387,6 +393,9 @@ def _check_setup_needed() -> None:
 @app.before_request
 def _refresh_authenticated_session() -> None:
     """Keep session role/username in sync with current database state."""
+    # Visitors have no DB record — skip refresh entirely
+    if session.get("visitor"):
+        return
     if not session.get("user_id"):
         return
     now = time.time()
@@ -434,20 +443,68 @@ def _csrf_valid() -> bool:
     return bool(expected and provided and hmac.compare_digest(expected, provided))
 
 
-def _apply_xcon_filter(clauses: list[str], params: list) -> None:
-    """Append category filter for restricted xcon users.
+def _apply_role_permission_filter(clauses: list[str], params: list,
+                                  db: sqlite3.Connection) -> None:
+    """Append category filter based on the current user's role permissions.
 
-    Modifies *clauses* and *params* in-place when the current session
-    belongs to an xcon user whose permission was downgraded to
-    ``"restricted"`` (i.e. the xcon log API rejected them).
+    Looks up the user's role in ``role_permissions`` table, with fallback to
+    ``"default"``.  If no entry is found, xcon-restricted users default to
+    only ``server_chat``; all other roles default to no filter (see everything).
 
-    Does nothing for non-xcon users or xcon users with full access.
+    Modifies *clauses* and *params* in-place.
     """
-    if session.get("role", "") != "xcon":
+    role = session.get("role", "")
+
+    # Determine which role_permissions key to look up
+    lookup_role = role
+    default_to_server_chat = False
+
+    if role == "xcon":
+        if session.get("xcon_permission", "") == "full":
+            lookup_role = "xcon_full"
+            # xcon_full defaults to no filter (sees everything)
+        else:
+            lookup_role = "xcon"
+            default_to_server_chat = True  # xcon restricted defaults to server_chat
+
+    # Look up role-based tag permission
+    row = db.execute(
+        "SELECT mode, categories FROM role_permissions WHERE role = ?",
+        (lookup_role,),
+    ).fetchone()
+
+    if row is None:
+        # Fall back to 'default' role_permissions entry if one exists
+        row = db.execute(
+            "SELECT mode, categories FROM role_permissions WHERE role = ?",
+            ("default",),
+        ).fetchone()
+    if row is None:
+        if default_to_server_chat:
+            clauses.append("category = ?")
+            params.append("server_chat")
         return
-    if session.get("xcon_permission", "") == "restricted":
-        clauses.append("category = ?")
-        params.append("server_chat")
+
+    mode = str(row["mode"])
+    cats = [c.strip() for c in str(row["categories"] or "").split(",") if c.strip()]
+
+    if mode == "all":
+        return
+
+    if mode == "whitelist":
+        if not cats:
+            # Empty whitelist → nothing is visible
+            clauses.append("1 = 0")
+        else:
+            placeholders = ",".join("?" * len(cats))
+            clauses.append(f"category IN ({placeholders})")
+            params.extend(cats)
+    elif mode == "blacklist":
+        if cats:
+            placeholders = ",".join("?" * len(cats))
+            clauses.append(f"(category NOT IN ({placeholders}) OR category = '')")
+            params.extend(cats)
+        # Empty blacklist → everything visible (no filter needed)
 
 
 
@@ -462,7 +519,7 @@ def login_required(f):
     """
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get("user_id"):
+        if not session.get("user_id") and not session.get("visitor"):
             if request.path.startswith("/api/"):
                 return jsonify({"error": "authentication required"}), 401
             # Store the destination server-side so /login never reads
@@ -606,6 +663,14 @@ def _process_one_sync_task() -> bool:
             entries = _fetch_remote_sync_batch(session, remote_url, after_time, after_id)
             if not entries:
                 break
+
+            # Apply tag rules to synced entries (fetcher does this via poll_loop,
+            # but sync bypasses fetcher entirely)
+            rules = load_compiled_tag_rules(db)
+            for entry in entries:
+                entry["category"] = categorize_log_text(
+                    entry.get("log", ""), rules
+                )
 
             fetched_count += len(entries)
             inserted, _ = insert_logs(db, entries, since_time=0)
@@ -960,10 +1025,13 @@ def login():
             if user["role"] == "xcon":
                 permission = check_xcon_permission(username, password)
                 session["xcon_permission"] = permission
+                update_xcon_level(db, user["id"], permission)
                 LOG.info("XCon user %r login, permission=%s from %s",
                          username, permission, _client_ip())
             else:
                 session.pop("xcon_permission", None)
+                if user.get("xcon_level", "") != "":
+                    update_xcon_level(db, user["id"], "")
 
             LOG.info("Login succeeded for user %r (role=%s) from %s",
                      username, user["role"], _client_ip())
@@ -971,6 +1039,20 @@ def login():
         finally:
             db.close()
     return render_template("login.html", skin_username=MC_SKIN_USERNAME, error=error)
+
+
+@app.route("/visitor", methods=["POST"])
+def visitor_login():
+    """Enter as a guest (visitor) without authentication."""
+    if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /visitor from %s", _client_ip())
+        return "CSRF 验证失败", 400
+    session.clear()
+    session["visitor"] = True
+    session["role"] = "visitor"
+    session["username"] = "游客"
+    LOG.info("Visitor entered from %s", _client_ip())
+    return redirect(url_for("index"))
 
 
 @app.route("/setup", methods=["GET", "POST"])
@@ -1075,13 +1157,12 @@ def index():
         clauses.append("time <= ?")
         params.append(to_ts)
 
-    _apply_xcon_filter(clauses, params)
+    db = get_db()
+    _apply_role_permission_filter(clauses, params, db)
 
     where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     count_sql = f"SELECT COUNT(*) FROM logs {where_sql}"
     data_sql  = f"SELECT id, log, name, time FROM logs {where_sql} ORDER BY time DESC, id DESC LIMIT ? OFFSET ?"
-
-    db = get_db()
     try:
         total = db.execute(count_sql, params).fetchone()[0]
 
@@ -1315,14 +1396,14 @@ def api_logs():
     per_page = request.args.get("per_page", PER_PAGE, type=int)
     per_page = max(1, min(per_page, 500))
 
-    # Apply xcon permission filter
+    # Apply role permission filter
     clauses: list[str] = []
     params: list = []
-    _apply_xcon_filter(clauses, params)
-    where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     db = get_db()
     try:
+        _apply_role_permission_filter(clauses, params, db)
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         total = db.execute(
             f"SELECT COUNT(*) FROM logs {where_sql}", params
         ).fetchone()[0]
@@ -1387,14 +1468,14 @@ def api_logs_export():
 @login_required
 def api_stats():
     """Quick stats endpoint."""
-    # Apply xcon permission filter
+    # Apply role permission filter
     clauses: list[str] = []
     params: list = []
-    _apply_xcon_filter(clauses, params)
-    where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     db = get_db()
     try:
+        _apply_role_permission_filter(clauses, params, db)
+        where_sql = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         total = db.execute(
             f"SELECT COUNT(*) FROM logs {where_sql}", params
         ).fetchone()[0]
@@ -1453,7 +1534,8 @@ def api_poll():
         filter_clauses.append("time <= ?")
         filter_params.append(to_ts)
 
-    _apply_xcon_filter(filter_clauses, filter_params)
+    db = get_db()
+    _apply_role_permission_filter(filter_clauses, filter_params, db)
 
     filter_where = (" AND ".join(filter_clauses)) if filter_clauses else ""
 
@@ -1469,7 +1551,6 @@ def api_poll():
     data_where = "WHERE " + " AND ".join(data_where_parts)
     all_params = cursor_params + filter_params
 
-    db = get_db()
     try:
         rows = db.execute(
             f"SELECT id, log, name, time FROM logs {data_where} "
@@ -1521,6 +1602,58 @@ def api_poll():
         "sync_tasks": sync_tasks,
     })
 
+# ── Admin: role permission management ───────────────────────────
+
+@app.route("/admin/role_permissions/create", methods=["POST"])
+@admin_required
+def admin_create_role_permission():
+    """Create or update a role's tag visibility permission."""
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
+
+    role = request.form.get("role", "").strip().lower()
+    mode = request.form.get("mode", "all").strip()
+    categories = request.form.get("categories", "").strip()
+
+    if not role:
+        flash("角色名不能为空", "error")
+        return redirect(url_for("admin_users"))
+    if mode not in ("all", "whitelist", "blacklist"):
+        flash("无效的权限模式", "error")
+        return redirect(url_for("admin_users"))
+
+    db = get_db()
+    try:
+        upsert_role_permission(db, role, mode, categories)
+        LOG.info("Admin %r set role permission for %r: mode=%s cats=%r from %s",
+                 session.get("username"), role, mode, categories, _client_ip())
+        flash(f"角色 {role!r} 的标签权限已更新", "success")
+    finally:
+        db.close()
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/role_permissions/<path:role>/delete", methods=["POST"])
+@admin_required
+def admin_delete_role_permission(role: str):
+    """Delete a role's tag visibility permission."""
+    if not _csrf_valid():
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_users"))
+
+    role = role.strip().lower()
+    db = get_db()
+    try:
+        delete_role_permission(db, role)
+        LOG.info("Admin %r deleted role permission for %r from %s",
+                 session.get("username"), role, _client_ip())
+        flash(f"角色 {role!r} 的标签权限已删除（恢复默认行为）", "success")
+    finally:
+        db.close()
+    return redirect(url_for("admin_users"))
+
+
 # ── Admin: user management ─────────────────────────────────────
 
 @app.route("/admin/users")
@@ -1529,11 +1662,20 @@ def admin_users():
     db = get_db()
     try:
         users = list_users(db)
+        role_perms = list_role_permissions(db)
+        # Support in-place editing: pre-fill form when ?edit_role=<role> is present
+        edit_role = request.args.get("edit_role", "").strip().lower()
+        edit_perm = None
+        if edit_role:
+            edit_perm = get_role_permission(db, edit_role)
     finally:
         db.close()
     return render_template(
         "admin_users.html",
         users=users,
+        role_permissions=role_perms,
+        edit_role=edit_role,
+        edit_perm=edit_perm,
         current_username=session.get("username", ""),
         current_role=session.get("role", ""),
         valid_roles=VALID_ROLES,
@@ -1550,7 +1692,7 @@ def admin_create_user():
         return redirect(url_for("admin_users"))
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
-    role     = request.form.get("role", "user")
+    role     = request.form.get("role", "").strip().lower()
     error    = None
 
     if not username:
@@ -1561,8 +1703,14 @@ def admin_create_user():
         error = "密码不能为空"
     elif len(password) < 6:
         error = "密码过短（至少 6 位）"
-    elif role not in VALID_ROLES:
-        error = "无效角色"
+    elif not role:
+        error = "角色名不能为空"
+    elif len(role) > 32:
+        error = "角色名过长（最多 32 字符）"
+    elif role == "xcon":
+        error = "XCon 用户由系统自动注册，不能手动创建"
+    elif role == "admin":
+        error = "管理员只能通过初始化向导创建"
 
     if error:
         flash(error, "error")
@@ -1570,14 +1718,8 @@ def admin_create_user():
 
     db = get_db()
     try:
-        if role == "xcon":
-            # xcon users: store plaintext for viewing only; auth is always external
-            pwd_hash = ""
-            pwd_plain = password
-        else:
-            pwd_hash = generate_password_hash(password)
-            pwd_plain = ""
-        create_user(db, username, pwd_hash, role, password_plain=pwd_plain)
+        pwd_hash = generate_password_hash(password)
+        create_user(db, username, pwd_hash, role, password_plain="")
         LOG.warning("Admin %r created user %r (role=%s) from %s",
                     session.get("username"), username, role, _client_ip())
         flash(f"用户 {username!r} 创建成功", "success")
@@ -1596,9 +1738,9 @@ def admin_update_role(user_id: int):
                     _client_ip())
         flash("请求已失效，请刷新页面后重试", "error")
         return redirect(url_for("admin_users"))
-    role = request.form.get("role", "")
-    if role not in VALID_ROLES:
-        flash("无效角色", "error")
+    role = request.form.get("role", "").strip().lower()
+    if not role or len(role) > 32:
+        flash("无效角色名", "error")
         return redirect(url_for("admin_users"))
 
     db = get_db()
@@ -1607,6 +1749,19 @@ def admin_update_role(user_id: int):
         target = get_user_by_id(db, user_id)
         if target is None:
             flash("用户不存在", "error")
+            return redirect(url_for("admin_users"))
+
+        # xcon role cannot be changed — determined by API probe at login
+        if target["role"] == "xcon":
+            flash("XCon 用户角色不可修改（由登录时 API 探测决定权限级别）", "error")
+            return redirect(url_for("admin_users"))
+        # Non-xcon users cannot be promoted to xcon
+        if role == "xcon":
+            flash("不能将用户改为 XCon 角色（XCon 由系统自动注册）", "error")
+            return redirect(url_for("admin_users"))
+        # Protect admin
+        if role == "admin" and target["role"] != "admin":
+            flash("不能将用户提升为管理员", "error")
             return redirect(url_for("admin_users"))
         if target["role"] == "admin" and role != "admin":
             if count_admins(db) <= 1:
@@ -1684,6 +1839,162 @@ def admin_delete_user(user_id: int):
     finally:
         db.close()
     return redirect(url_for("admin_users"))
+
+# ── Admin: tag rules management ────────────────────────────────
+
+@app.route("/admin/tag_rules")
+@admin_required
+def admin_tag_rules():
+    """Render the tag rules management page."""
+    db = get_db()
+    try:
+        rules = list_tag_rules(db)
+    finally:
+        db.close()
+    return render_template(
+        "admin_tag_rules.html",
+        rules=rules,
+        current_username=session.get("username", ""),
+        current_role=session.get("role", ""),
+    )
+
+
+@app.route("/admin/tag_rules/create", methods=["POST"])
+@admin_required
+def admin_create_tag_rule():
+    """Create a new tag rule."""
+    if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /admin/tag_rules/create from %s",
+                    _client_ip())
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_tag_rules"))
+
+    pattern = request.form.get("pattern", "").strip()
+    category = request.form.get("category", "").strip()
+    priority = request.form.get("priority", 0, type=int)
+    description = request.form.get("description", "").strip()
+
+    if not pattern:
+        flash("正则表达式不能为空", "error")
+        return redirect(url_for("admin_tag_rules"))
+    if not category:
+        flash("标签名不能为空", "error")
+        return redirect(url_for("admin_tag_rules"))
+
+    # Validate regex compiles
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        flash(f"正则表达式无效: {e}", "error")
+        return redirect(url_for("admin_tag_rules"))
+
+    db = get_db()
+    try:
+        rule_id = create_tag_rule(db, pattern, category, priority, description)
+        LOG.info("Admin %r created tag rule #%d (pattern=%r, category=%r) from %s",
+                 session.get("username"), rule_id, pattern, category, _client_ip())
+        flash(f"标签规则 #{rule_id} 已创建", "success")
+    finally:
+        db.close()
+    return redirect(url_for("admin_tag_rules"))
+
+
+@app.route("/admin/tag_rules/<int:rule_id>/update", methods=["POST"])
+@admin_required
+def admin_update_tag_rule(rule_id: int):
+    """Update an existing tag rule."""
+    if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /admin/tag_rules/update from %s",
+                    _client_ip())
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_tag_rules"))
+
+    pattern = request.form.get("pattern", "").strip()
+    category = request.form.get("category", "").strip()
+    priority = request.form.get("priority", 0, type=int)
+    description = request.form.get("description", "").strip()
+    enabled = request.form.get("enabled") == "1"
+
+    if not pattern:
+        flash("正则表达式不能为空", "error")
+        return redirect(url_for("admin_tag_rules"))
+    if not category:
+        flash("标签名不能为空", "error")
+        return redirect(url_for("admin_tag_rules"))
+
+    # Validate regex compiles
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        flash(f"正则表达式无效: {e}", "error")
+        return redirect(url_for("admin_tag_rules"))
+
+    db = get_db()
+    try:
+        existing = get_tag_rule(db, rule_id)
+        if existing is None:
+            flash("规则不存在", "error")
+            return redirect(url_for("admin_tag_rules"))
+        update_tag_rule(db, rule_id, pattern, category, priority, description, enabled)
+        LOG.info("Admin %r updated tag rule #%d (pattern=%r, category=%r, enabled=%s) from %s",
+                 session.get("username"), rule_id, pattern, category, enabled, _client_ip())
+        flash(f"标签规则 #{rule_id} 已更新", "success")
+    finally:
+        db.close()
+    return redirect(url_for("admin_tag_rules"))
+
+
+@app.route("/admin/tag_rules/<int:rule_id>/delete", methods=["POST"])
+@admin_required
+def admin_delete_tag_rule(rule_id: int):
+    """Delete a tag rule."""
+    if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /admin/tag_rules/delete from %s",
+                    _client_ip())
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_tag_rules"))
+
+    db = get_db()
+    try:
+        existing = get_tag_rule(db, rule_id)
+        if existing is None:
+            flash("规则不存在", "error")
+            return redirect(url_for("admin_tag_rules"))
+        delete_tag_rule(db, rule_id)
+        LOG.info("Admin %r deleted tag rule #%d (pattern=%r, category=%r) from %s",
+                 session.get("username"), rule_id,
+                 existing["pattern"], existing["category"], _client_ip())
+        flash(f"标签规则 #{rule_id} 已删除", "success")
+    finally:
+        db.close()
+    return redirect(url_for("admin_tag_rules"))
+
+
+@app.route("/admin/tag_rules/apply", methods=["POST"])
+@admin_required
+def admin_apply_tag_rules():
+    """Re-apply all tag rules to every stored log (backfill)."""
+    if not _csrf_valid():
+        LOG.warning("CSRF validation failed at /admin/tag_rules/apply from %s",
+                    _client_ip())
+        flash("请求已失效，请刷新页面后重试", "error")
+        return redirect(url_for("admin_tag_rules"))
+
+    db = get_db()
+    try:
+        rules = load_compiled_tag_rules(db)
+        rule_count = len(rules)
+        total, updated = backfill_all_categories(db, rules)
+        LOG.info("Admin %r applied tag rules (%d rules): %d rows scanned, %d updated from %s",
+                 session.get("username"), rule_count, total, updated, _client_ip())
+        flash(f"规则应用完成：{rule_count} 条规则，扫描 {total} 行，更新 {updated} 行", "success")
+    except Exception as e:
+        LOG.error("Tag rules backfill failed: %s", e)
+        flash(f"规则应用失败: {e}", "error")
+    finally:
+        db.close()
+    return redirect(url_for("admin_tag_rules"))
+
 
 # ── Routes ─────────────────────────────────────────────────────
 

@@ -53,7 +53,7 @@
   .user-info { color: var(--muted); font-size: 12px; }
 
   .content {
-    max-width: 900px;
+    max-width: 1050px;
     margin: 24px auto;
     padding: 0 16px;
   }
@@ -83,7 +83,7 @@
     color: var(--err);
   }
 
-  /* User table */
+  /* Table */
   table {
     width: 100%;
     border-collapse: collapse;
@@ -146,6 +146,8 @@
   .btn-primary:hover { filter: brightness(1.15); }
   .btn-danger { border-color: rgba(224,64,64,0.6); color: var(--err); }
   .btn-danger:hover { background: rgba(224,64,64,0.12); border-color: var(--err); }
+  .btn-warn { border-color: rgba(224,160,0,0.6); color: var(--warn); }
+  .btn-warn:hover { background: rgba(224,160,0,0.12); border-color: var(--warn); }
 
   /* Create user form */
   .create-form {
@@ -165,6 +167,19 @@
     padding: 5px 9px;
   }
   .flabel { color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+  /* Permission mode badge */
+  .mode-all   { color: var(--green); }
+  .mode-white { color: var(--warn); }
+  .mode-black { color: var(--err); }
+  .perm-categories { font-size: 11px; color: var(--muted); max-width: 200px; word-break: break-all; }
+
+  .section-desc {
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 8px;
+    font-weight: normal;
+  }
 </style>
 </head>
 <body>
@@ -173,6 +188,7 @@
 <div class="topbar">
   <span class="title">▣ MC Server Logs</span>
   <a href="/">← 日志主页</a>
+  <a href="/admin/tag_rules">标签规则</a>
   <span class="spacer"></span>
   <span class="user-info">{{ current_username }} ({{ current_role }})</span>
   <form method="post" action="/logout" style="display:inline;margin:0;">
@@ -189,8 +205,91 @@
     {% endfor %}
   {% endwith %}
 
+  <!-- ── Role tag permissions ────────────────── -->
+  <h2>角色标签权限 <span class="section-desc">— xcon(受限)→用 xcon；xcon(完全)→用 xcon_full；未登录→visitor；未分配角色→default；admin 可自行配置</span></h2>
+  <div class="create-form">
+    <form method="post" action="/admin/role_permissions/create">
+      <div class="fields">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <span class="flabel">角色名</span>
+        {% if edit_role %}
+        <input type="text" name="role" value="{{ edit_role }}" required style="width:160px;" readonly
+               title="编辑模式下角色名不可修改">
+        {% else %}
+        <input type="text" name="role" placeholder="如 visitor / default / xcon / admin" required style="width:160px;"
+               list="role-perm-suggestions">
+        {% endif %}
+        <datalist id="role-perm-suggestions">
+          <option value="visitor">visitor（未登录游客）</option>
+          <option value="default">default（未分配角色）</option>
+          <option value="admin">admin（管理员）</option>
+          <option value="xcon">xcon（受限用户）</option>
+          <option value="xcon_full">xcon_full（完全用户）</option>
+          {% for p in role_permissions %}
+          <option value="{{ p.role }}">
+          {% endfor %}
+        </datalist>
+        <span class="flabel">模式</span>
+        <select name="mode">
+          <option value="all" {% if edit_perm and edit_perm.mode == 'all' %}selected{% endif %}>全部可见</option>
+          <option value="whitelist" {% if edit_perm and edit_perm.mode == 'whitelist' %}selected{% endif %}>白名单（仅可见）</option>
+          <option value="blacklist" {% if edit_perm and edit_perm.mode == 'blacklist' %}selected{% endif %}>黑名单（不可见）</option>
+        </select>
+        <span class="flabel">标签列表</span>
+        <input type="text" name="categories" placeholder="逗号分隔，如 server_chat, server_info" style="width:280px;"
+               value="{{ edit_perm.categories if edit_perm else '' }}">
+        <button type="submit" class="btn btn-primary">{{ '更新权限' if edit_role else '保存权限' }}</button>
+        {% if edit_role %}
+        <a href="/admin/users" class="btn">取消编辑</a>
+        {% endif %}
+      </div>
+    </form>
+  </div>
+
+  {% if role_permissions %}
+  <table style="margin-bottom:28px;">
+    <thead>
+      <tr>
+        <th>角色名</th>
+        <th>模式</th>
+        <th>标签列表</th>
+        <th>创建时间</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in role_permissions %}
+      <tr>
+        <td><span class="badge-user">{{ p.role }}</span></td>
+        <td>
+          {% if p.mode == 'all' %}
+          <span class="mode-all">全部可见</span>
+          {% elif p.mode == 'whitelist' %}
+          <span class="mode-white">白名单（仅可见）</span>
+          {% elif p.mode == 'blacklist' %}
+          <span class="mode-black">黑名单（不可见）</span>
+          {% endif %}
+        </td>
+        <td><span class="perm-categories">{{ p.categories or '—' }}</span></td>
+        <td style="color:var(--muted);font-size:11px;">{{ p.created_at or '—' }}</td>
+        <td>
+          <div class="row-actions">
+            <a href="/admin/users?edit_role={{ p.role }}" class="btn">编辑</a>
+            <form method="post" action="/admin/role_permissions/{{ p.role }}/delete"
+                  onsubmit="return confirm('确认删除角色 {{ p.role }} 的标签权限？\n删除后该角色将恢复默认行为。');" style="display:inline;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-danger">删除</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
   <!-- ── Create user ────────────────────────── -->
-  <h2>创建新用户</h2>
+  <h2>创建新用户 <span class="section-desc">— 角色名可自由输入（admin/xcon 受限）</span></h2>
   <div class="create-form">
     <form method="post" action="/admin/users/create">
       <div class="fields">
@@ -199,12 +298,14 @@
         <input type="text" name="username" placeholder="username" required maxlength="64" style="width:140px;">
         <span class="flabel">密码</span>
         <input type="password" name="password" placeholder="≥ 6 位" required minlength="6" style="width:130px;">
-        <span class="flabel">角色</span>
-        <select name="role">
-          {% for r in valid_roles %}
-          <option value="{{ r }}" {% if r == 'user' %}selected{% endif %}>{{ r }}</option>
+        <span class="flabel">角色名</span>
+        <input type="text" name="role" placeholder="如 viewer" required maxlength="32" style="width:120px;" list="role-suggestions">
+        <datalist id="role-suggestions">
+          <option value="user">
+          {% for p in role_permissions %}
+          <option value="{{ p.role }}">
           {% endfor %}
-        </select>
+        </datalist>
         <button type="submit" class="btn btn-primary">创建用户</button>
       </div>
     </form>
@@ -229,7 +330,13 @@
         <td>{{ u.id }}</td>
         <td>{{ u.username }}</td>
         <td>
-          <span class="badge-{{ u.role }}">{{ u.role }}</span>
+          {% if u.role == 'admin' %}
+          <span class="badge-admin">{{ u.role }}</span>
+          {% elif u.role == 'xcon' %}
+          <span class="badge-xcon">xcon{% if u.xcon_level == 'full' %}(完全){% elif u.xcon_level == 'restricted' %}(受限){% else %}(未探测){% endif %}</span>
+          {% else %}
+          <span class="badge-user">{{ u.role }}</span>
+          {% endif %}
         </td>
         <td>
           {% if u.role == 'xcon' and u.password_plain %}
@@ -241,16 +348,20 @@
         <td>{{ u.created_at or '—' }}</td>
         <td>
           <div class="row-actions">
-            <!-- Change role -->
+            {% if u.role == 'xcon' %}
+            <!-- xcon: role locked, determined by API probe -->
+            <span class="badge-xcon" style="font-size:11px;" title="XCon 用户角色由登录时 API 探测决定">角色锁定</span>
+            {% elif u.role == 'admin' %}
+            <!-- admin: role locked -->
+            <span class="badge-admin" style="font-size:11px;">管理员</span>
+            {% else %}
+            <!-- Custom/normal role: editable -->
             <form method="post" action="/admin/users/{{ u.id }}/role">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <select name="role">
-                {% for r in valid_roles %}
-                <option value="{{ r }}" {% if r == u.role %}selected{% endif %}>{{ r }}</option>
-                {% endfor %}
-              </select>
+              <input type="text" name="role" value="{{ u.role }}" required maxlength="32" style="width:100px;" placeholder="角色名">
               <button type="submit" class="btn">修改角色</button>
             </form>
+            {% endif %}
             <!-- Change password -->
             {% if u.role == 'xcon' %}
             <span style="color:var(--muted);font-size:11px;">XCon 认证 · 不可修改</span>
@@ -273,7 +384,7 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px;">暂无用户</td></tr>
+      <tr><td colspan="7" style="text-align:center;color:var(--muted);padding:20px;">暂无用户</td></tr>
       {% endfor %}
     </tbody>
   </table>

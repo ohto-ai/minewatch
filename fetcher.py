@@ -14,6 +14,7 @@ from auth import get_auth_headers
 from db import (
     insert_logs, count_logs, get_latest_time, claim_next_query_task,
     complete_query_task, ensure_query_task, fail_query_task, has_queued_query_task,
+    load_compiled_tag_rules, categorize_log_text,
 )
 from schedule import get_interval, describe
 
@@ -41,14 +42,22 @@ def clean_log(raw: str) -> str:
     return text.strip()
 
 
-def categorize_log(log_text: str) -> str:
-    """Classify a cleaned log line into a category based on content markers.
+# ── Tag rules cache (TTL-backed, refreshed from DB) ─────────────
 
-    Returns a category string (e.g. 'server_chat') or empty string for general logs.
-    """
-    if '[ServerChat]' in log_text:
-        return 'server_chat'
-    return ''
+_TAG_RULES_CACHE: list[tuple[re.Pattern, str]] | None = None
+_TAG_RULES_CACHE_TIME: float = 0.0
+_TAG_RULES_CACHE_TTL: float = 30.0  # seconds
+
+
+def _get_tag_rules(conn: sqlite3.Connection) -> list[tuple[re.Pattern, str]]:
+    """Return compiled tag rules from a TTL-backed cache."""
+    global _TAG_RULES_CACHE, _TAG_RULES_CACHE_TIME
+    now = _time.monotonic()
+    if (_TAG_RULES_CACHE is None
+            or (now - _TAG_RULES_CACHE_TIME) > _TAG_RULES_CACHE_TTL):
+        _TAG_RULES_CACHE = load_compiled_tag_rules(conn)
+        _TAG_RULES_CACHE_TIME = now
+    return _TAG_RULES_CACHE
 
 
 def fetch_logs(session: requests.Session, search: str = "") -> list[dict]:
@@ -99,9 +108,10 @@ def process_one_query_task(conn: sqlite3.Connection, session: requests.Session) 
 
     try:
         entries = fetch_logs(session, search=keyword)
+        rules = load_compiled_tag_rules(conn)
         for entry in entries:
             entry["log"] = clean_log(entry["log"])
-            entry["category"] = categorize_log(entry["log"])
+            entry["category"] = categorize_log_text(entry["log"], rules)
         inserted_count, _ = insert_logs(conn, entries, since_time=0)
         second_created, second_reused = expand_second_query_tasks(conn, keyword, len(entries))
         complete_query_task(conn, task_id, fetched_count=len(entries),
@@ -206,10 +216,11 @@ def poll_loop(conn: sqlite3.Connection) -> None:
                 entries = fetch_logs(session)
                 consecutive_errors = 0
 
-                # Clean ANSI codes from each log line
+                # Clean ANSI codes from each log line, then categorize
+                rules = _get_tag_rules(conn)
                 for entry in entries:
                     entry["log"] = clean_log(entry["log"])
-                    entry["category"] = categorize_log(entry["log"])
+                    entry["category"] = categorize_log_text(entry["log"], rules)
 
                 new_count, watermark = insert_logs(conn, entries,
                                                     since_time=watermark)
