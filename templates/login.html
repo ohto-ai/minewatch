@@ -28,6 +28,10 @@
     justify-content: center;
     min-height: 100vh;
   }
+  @font-face {
+    font-family: 'Minecraft';
+    src: url('https://cdn.jsdelivr.net/npm/@south-paw/typeface-minecraft/files/minecraft.woff2') format('woff2');
+  }
 
   /* ── Two-column container ─────────────────────── */
   .container {
@@ -357,7 +361,7 @@
 </script>
 
 <script type="module">
-import { SkinViewer } from "skinview3d";
+import { SkinViewer, NameTagObject, WalkingAnimation } from "skinview3d";
 
 (function () {
   const canvas = document.getElementById("skin-canvas");
@@ -392,6 +396,7 @@ import { SkinViewer } from "skinview3d";
   };
   skinImg.src = skinUrl;
 
+/*
   // ── Handle skin load success — start animation ──
   skinImg.onload = function () {
     canvas.style.display = "block";
@@ -406,6 +411,10 @@ import { SkinViewer } from "skinview3d";
     }
     animate();
   };
+*/
+
+  viewer.animation = new WalkingAnimation();
+  // viewer.nameTag = new NameTagObject(skinUsername, { textStyle: "yellow" });
 
   // ── Handle window resize for responsive canvas ──
   function handleResize() {
